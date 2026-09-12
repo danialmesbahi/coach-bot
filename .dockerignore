@@ -1,0 +1,17 @@
+.env*
+.git
+.gitignore
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.venv
+graphify-out
+design-system
+web
+.pnpm-store
+.visual*
+artifacts
+*.log
+*.zip
+*.rar

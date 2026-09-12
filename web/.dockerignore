@@ -1,0 +1,10 @@
+node_modules
+.next
+.git
+*.log
+README.md
+.env*
+.pnpm-store
+*.tsbuildinfo
+test-results
+playwright-report
