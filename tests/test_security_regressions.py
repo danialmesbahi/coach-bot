@@ -105,7 +105,8 @@ def test_established_stream_stops_after_logout(monkeypatch):
             queue.put_nowait('{"id":2}')
 
     async def run():
-        actor = {'telegram_id':webapp.settings.sensi_id, 'role':'sensi', 'auth_method':'telegram', 'csrf':'test'}
+        actor = {'telegram_id':webapp.settings.sensi_id, 'role':'leader', 'staff_id':1, 'version':1, 'auth_method':'telegram', 'csrf':'test'}
+        monkeypatch.setattr(webapp.staff, 'by_telegram', AsyncMock(return_value={'id':1,'telegram_id':webapp.settings.sensi_id,'username':'leader','display_name':'Leader','role':'leader','permissions':[],'status':'active','auth_mode':'telegram','session_version':1}))
         redis = SimpleNamespace(get=AsyncMock(side_effect=[json.dumps(actor), None]))
         stream = SimpleNamespace(prepare=AsyncMock(), write=AsyncMock())
         monkeypatch.setattr(webapp.web, 'StreamResponse', lambda **kwargs: stream)

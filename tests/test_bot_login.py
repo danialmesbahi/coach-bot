@@ -11,6 +11,13 @@ from app.handlers.web_login import login_request
 from app.services import web_login
 
 
+@pytest.fixture(autouse=True)
+def accounts(monkeypatch):
+    async def account(telegram_id):
+        return {'id': 1, 'telegram_id': telegram_id, 'role': 'leader', 'status': 'active', 'auth_mode': 'telegram', 'session_version': 1} if telegram_id == webapp.settings.sensi_id else None
+    monkeypatch.setattr(web_login.staff, 'by_telegram', account)
+
+
 class MemoryRedis:
     def __init__(self):
         self.values = {}
@@ -57,7 +64,7 @@ def test_denial_or_revoked_role_never_creates_session(state):
 
 
 def test_only_authorized_telegram_sender_can_approve():
-    redis = SimpleNamespace(eval=AsyncMock(return_value=1))
+    redis = SimpleNamespace(eval=AsyncMock(return_value=1), get=AsyncMock(return_value=json.dumps({'code': '123456'})))
     assert not asyncio.run(web_login.approve(redis, "a" * 32, -1))
     redis.eval.assert_not_awaited()
     assert asyncio.run(web_login.approve(redis, "a" * 32, webapp.settings.sensi_id))

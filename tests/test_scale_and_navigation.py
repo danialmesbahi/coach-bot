@@ -26,7 +26,7 @@ def test_dashboard_kpis_precede_chart_and_collapsed_nav_can_reopen():
     client = open("web/src/components/console-app.tsx", encoding="utf-8").read()
     css = open("web/src/app/globals.css", encoding="utf-8").read()
     assert client.index('className="dashboard-kpis"') < client.index('className="dashboard-grid"')
-    assert 'className="kpi-card sales-summary"' in client and 'className="segmented sales-periods"' in client
+    assert 'kpi-card sales-summary' in client and 'className="segmented sales-periods"' in client
     assert 't("salesTrend")' in client
     assert 'aria-expanded={collapsed !== "1"}' in client
     assert ".nav-collapsed .collapse-button{display:grid" in css

@@ -1,4 +1,4 @@
-export type Role = "sensi" | "admin_team";
+export type Role = "platform" | "leader" | "staff";
 export type View = "dashboard" | "orders" | "messages" | "customers" | "sales";
 export type Lang = "fa" | "en";
 export type SalesPeriod = "day" | "week" | "month" | "all";
@@ -7,6 +7,10 @@ export interface Session {
   role: Role;
   telegramId: number;
   csrf: string;
+  staffId: number;
+  displayName: string;
+  username: string;
+  permissions: string[];
 }
 
 export interface PageResult<T> {
@@ -105,6 +109,8 @@ export interface ThreadPage extends PageResult<ThreadListItem> {
 export interface MessageItem {
   id: number;
   direction: "customer" | "sensi";
+  sender_name?: string;
+  sender_staff_id?: number;
   content_text?: string;
   content_type?: string;
   has_attachment?: boolean;

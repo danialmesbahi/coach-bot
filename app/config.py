@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     redis_url: str
     sensi_id: int
     admin_team_ids: str = ''
+    platform_team_ids: str = ''
     support_username: str = ''
     bot_username: str = 'isensir_bot'
     development_team_percent: int = Field(
@@ -49,6 +50,13 @@ class Settings(BaseSettings):
     def admin_team(self) -> set[int]:
         return {int(x.strip()) for x in self.admin_team_ids.split(',') if x.strip()}
 
+    @property
+    def platform_team(self) -> set[int]:
+        ids = {int(x.strip()) for x in self.platform_team_ids.split(',') if x.strip()}
+        if any(value <= 0 for value in ids):
+            raise ValueError('Platform Telegram IDs must be positive')
+        return ids
+
     def role(self, telegram_id: int) -> str:
         if telegram_id == self.sensi_id:
             return 'sensi'
@@ -76,6 +84,7 @@ class Settings(BaseSettings):
             raise RuntimeError('DB_POOL_MIN cannot exceed DB_POOL_MAX')
         try:
             self.admin_team
+            self.platform_team
         except ValueError as exc:
             raise RuntimeError('ADMIN_TEAM_IDS must contain only numeric Telegram IDs') from exc
         mode = self.payment_mode.lower()

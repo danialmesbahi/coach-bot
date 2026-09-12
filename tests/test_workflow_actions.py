@@ -10,7 +10,7 @@ from app import webapp
 
 
 class Request(dict):
-    def __init__(self, body, role="sensi"):
+    def __init__(self, body, role="leader"):
         super().__init__(actor={"role": role, "telegram_id": 123})
         self.body = body
         self.match_info = {"order_id": "42"}

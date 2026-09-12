@@ -2,7 +2,6 @@ from aiogram import F, Router
 from aiogram.filters import CommandObject, CommandStart
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from app.config import get_settings
 from app.services import web_login
 
 router = Router(name="web_login")
@@ -10,11 +9,11 @@ router = Router(name="web_login")
 
 @router.message(F.chat.type == "private", CommandStart(deep_link=True, magic=F.args.startswith("login_")))
 async def login_request(message: Message, command: CommandObject, login_redis):
-    if get_settings().role(message.from_user.id) not in {"sensi", "admin_team"}:
-        await message.answer("این حساب اجازهٔ ورود به پنل مدیریت را ندارد.")
-        return
     challenge = (command.args or "")[6:]
     data = await web_login.pending(login_redis, challenge)
+    if not await web_login.allowed(message.from_user.id, data):
+        await message.answer("این حساب اجازهٔ تأیید این درخواست را ندارد. از پنل دوباره وارد شو.")
+        return
     if not data or data.get("telegram_id") or data.get("denied"):
         await message.answer("این درخواست ورود منقضی شده یا استفاده شده است. از پنل دوباره تلاش کن.")
         return

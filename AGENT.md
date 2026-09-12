@@ -14,7 +14,9 @@ The bot runs on one server and one database. There is exactly one Sensi per bot.
 
 ## Roles
 
-There are exactly three roles:
+Web-panel update: the current web roles are **platform**, **leader** and **staff**, stored in PostgreSQL. Platform manages all levels; leader manages staff only; staff has explicit capabilities. `docs/STAFF_ACCESS.md` supersedes the historical web-role restrictions below. `Settings.role()` and the descriptions below remain historical bot compatibility, not web API authorization. Never use environment role checks to authorize staff API/media/SSE requests.
+
+Historical Telegram roles:
 
 ### 1. Customer
 A normal Telegram user who buys plans, submits personal data, pays, receives status updates, receives the final plan, and can message the Sensi.

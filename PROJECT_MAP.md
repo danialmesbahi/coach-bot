@@ -5,7 +5,7 @@ Read this first for any change. Then open only the listed route and its matching
 ## Scope and source of truth
 
 - One bot, one Sensi, no multi-tenant model.
-- Roles: `customer`, `sensi`, `admin_team`; IDs and runtime policy come from `app/config.py`.
+- Customers use Telegram. Web roles are `platform`, `leader`, `staff` in `staff_accounts`; permissions live in `app/services/staff.py`. Environment IDs bootstrap accounts once, not on every login. Legacy `Settings.role()` is for bot compatibility, not web authorization.
 - Contract precedence: `AGENT.md` → current code/migrations → `README.md`.
 
 ## Runtime
@@ -30,6 +30,7 @@ web-login approval router → edit router → customer router (private chats onl
 | Payment gateway/callback | `services/payment.py`, `main.py` | `handlers/user.py`, `db/repositories.py` |
 | Data/status/reporting | `db/repositories.py` | `schema.sql`, latest Alembic migration |
 | Roles, env, webhook, rate limits | `config.py`, `main.py` | `middlewares/security.py`, `docker-compose.yml` |
+| Staff accounts, invitations, permissions, collaboration | `services/staff.py`, `webapp.py` | `web/src/components/staff-panel.tsx`, `docs/STAFF_ACCESS.md`, `tests/test_staff_access.py` |
 | UI labels/keyboard/callbacks | `keyboards.py` | relevant handler |
 
 ## Core flow

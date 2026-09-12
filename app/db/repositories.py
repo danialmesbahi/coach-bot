@@ -498,15 +498,18 @@ async def attach_plan(order_id: int, file_id: str, file_name: str | None, plan_t
 
 async def add_audit(actor: int, action: str, target_type: str | None = None, target_id: int | None = None, metadata: dict | None = None):
     async with db.acquire() as c:
-        await c.execute("INSERT INTO audit_logs(actor_telegram_id,action,target_type,target_id,metadata) VALUES($1,$2,$3,$4,$5::jsonb)", actor, action, target_type, target_id, json.dumps(metadata or {}, ensure_ascii=False))
+        await c.execute('''INSERT INTO audit_logs(actor_telegram_id,action,target_type,target_id,metadata,actor_staff_id,actor_name)
+            VALUES($1,$2,$3,$4,$5::jsonb,(SELECT id FROM staff_accounts WHERE telegram_id=$1),(SELECT display_name FROM staff_accounts WHERE telegram_id=$1))''', actor, action, target_type, target_id, json.dumps(metadata or {}, ensure_ascii=False))
 
 async def add_support_message(tg_id: int, message_id: int, direction: str = 'customer', sender_telegram_id: int | None = None, reply_to_message_id: int | None = None, content_type: str = 'text', content_text: str | None = None, file_id: str | None = None, file_name: str | None = None, mime_type: str | None = None, file_size: int | None = None):
     async with db.acquire() as c:
         u = await c.fetchrow("SELECT id FROM users WHERE telegram_id=$1", tg_id)
         if u:
             await c.execute(
-                """INSERT INTO support_messages(user_id,message_id,direction,sender_telegram_id,reply_to_message_id,content_type,content_text,file_id,file_name,mime_type,file_size)
-                   VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)""",
+                """INSERT INTO support_messages(user_id,message_id,direction,sender_telegram_id,reply_to_message_id,content_type,content_text,file_id,file_name,mime_type,file_size,sender_staff_id,sender_name)
+                   VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,
+                   (SELECT id FROM staff_accounts WHERE telegram_id=$4 AND $3='sensi'),
+                   (SELECT display_name FROM staff_accounts WHERE telegram_id=$4 AND $3='sensi'))""",
                 u['id'], message_id, direction, sender_telegram_id or tg_id, reply_to_message_id, content_type, content_text, file_id,
                 file_name, mime_type, file_size
             )

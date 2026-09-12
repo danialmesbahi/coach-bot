@@ -29,7 +29,9 @@ def test_live_file_overrides_base_configuration(tmp_path, monkeypatch):
 @pytest.mark.parametrize("method,expected", [(None, 401), ("development", 401), ("telegram", 200)])
 def test_disabling_test_login_revokes_test_and_legacy_sessions(monkeypatch, method, expected):
     monkeypatch.setattr(webapp.settings, "web_dev_login", False)
-    actor = {"telegram_id": webapp.settings.sensi_id, "role": "sensi", "csrf": "test"}
+    actor = {"telegram_id": webapp.settings.sensi_id, "staff_id": 1, "version": 1, "csrf": "test"}
+    account = {'id':1,'telegram_id':webapp.settings.sensi_id,'username':'leader','display_name':'Leader','role':'leader','permissions':[],'status':'active','auth_mode':'telegram','session_version':1}
+    monkeypatch.setattr(webapp.staff, 'by_telegram', AsyncMock(return_value=account))
     if method:
         actor["auth_method"] = method
     redis = AsyncMock()
@@ -37,12 +39,15 @@ def test_disabling_test_login_revokes_test_and_legacy_sessions(monkeypatch, meth
     redis.incr.return_value = 1
     request = make_mocked_request("GET", "/api/session", headers={"Cookie": "sensi_session=test"})
     request.app["redis"] = redis
-    result = asyncio.run(webapp.auth(request, AsyncMock(return_value=web.Response())))
+    result = asyncio.run(webapp.auth(request, webapp.session))
     assert result.status == expected
     assert redis.delete.await_count == (expected == 401)
 
 
-def test_real_login_session_is_tagged_and_customer_is_denied():
+def test_real_login_session_is_tagged_and_customer_is_denied(monkeypatch):
+    async def account(telegram_id):
+        return {'id':1,'status':'active','auth_mode':'telegram','session_version':1} if telegram_id == webapp.settings.sensi_id else None
+    monkeypatch.setattr(webapp.staff, 'by_telegram', account)
     redis = AsyncMock()
     request = SimpleNamespace(app={"redis": redis})
     asyncio.run(webapp._new_session(request, webapp.settings.sensi_id))

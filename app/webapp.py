@@ -27,7 +27,7 @@ from app.config import get_settings
 from app.db import repositories as repo
 from app.db.core import db
 from app.utils.photos import normalize_photos
-from app.services import web_login
+from app.services import web_login, staff
 from app.utils.media import BoundedBuffer, _inspect_upload, _sniff_download
 
 
@@ -98,11 +98,11 @@ def validate_telegram_auth(raw: str | dict, *, webapp: bool, now: int | None = N
 
 
 async def _new_session(request: web.Request, telegram_id: int, *, auth_method: str = "telegram") -> str:
-    role = settings.role(telegram_id)
-    if role not in {"sensi", "admin_team"}:
+    account = await staff.by_telegram(telegram_id)
+    if not account or account['status'] != 'active' or (auth_method != 'development' and account['auth_mode'] != auth_method):
         raise web.HTTPForbidden(text="This account has no management access")
     token = secrets.token_urlsafe(32)
-    actor = {"telegram_id": telegram_id, "role": role, "csrf": secrets.token_urlsafe(24), "auth_method": auth_method}
+    actor = {"telegram_id": telegram_id, "staff_id": account['id'], "version": account['session_version'], "csrf": secrets.token_urlsafe(24), "auth_method": auth_method}
     await request.app["redis"].setex(
         f"web:session:{token}", settings.web_session_hours * 3600, json.dumps(actor)
     )
@@ -157,6 +157,10 @@ async def auth(request: web.Request, handler):
     if not actor:
         return response({"error": "unauthorized"}, 401)
     request["actor"] = actor
+    route_name = getattr(handler, '__name__', '')
+    if route_name not in staff.ROUTE_PERMISSIONS:
+        return response({'error': 'permission_denied'}, 403)
+    staff.require(actor, staff.ROUTE_PERMISSIONS[route_name])
     if request.method not in {"GET", "HEAD", "OPTIONS"}:
         if not hmac.compare_digest(request.headers.get("X-CSRF-Token", ""), actor["csrf"]):
             return response({"error": "invalid_csrf"}, 403)
@@ -181,14 +185,14 @@ async def _session_actor(request: web.Request):
     actor = json.loads(raw)
     # Untagged legacy sessions may have been issued by the test-login bypass.
     real_login_required = not settings.web_dev_login or settings.app_env.lower() == "production"
-    if real_login_required and actor.get("auth_method") != "telegram":
+    if real_login_required and actor.get("auth_method") not in {"telegram", "password_telegram"}:
         await request.app["redis"].delete(f"web:session:{token}")
         return None
-    current_role = settings.role(actor["telegram_id"])
-    if current_role not in {"sensi", "admin_team"} or current_role != actor["role"]:
+    account = await staff.by_telegram(actor["telegram_id"])
+    if not account or account['status'] != 'active' or account['id'] != actor.get('staff_id') or account['session_version'] != actor.get('version'):
         await request.app["redis"].delete(f"web:session:{token}")
         return None
-    return actor
+    return {**actor, **staff.public(account)}
 
 
 @web.middleware
@@ -204,11 +208,6 @@ async def errors(request: web.Request, handler):
         return response({"error": "server_error"}, 500)
 
 
-def require_sensi(request: web.Request):
-    if request["actor"]["role"] != "sensi":
-        raise web.HTTPForbidden(text="Sensi access required")
-
-
 async def _rate_limited(request: web.Request, scope: str, limit: int, window: int = 60) -> bool:
     key = f"web:limit:{scope}:{request['actor']['telegram_id']}:{int(time.time()) // window}"
     count = await request.app["redis"].incr(key)
@@ -218,7 +217,7 @@ async def _rate_limited(request: web.Request, scope: str, limit: int, window: in
 
 
 def management_record_visible(role: str, rows: dict | list[dict] | None) -> bool:
-    if role == "sensi":
+    if role in {"sensi", "leader", "platform", "staff"}:
         return True
     records = rows if isinstance(rows, list) else [rows] if rows else []
     return any(bool(row.get("paid_at")) for row in records)
@@ -442,16 +441,33 @@ async def bot_login(request: web.Request):
         username = settings.bot_username.lstrip("@")
         if not username:
             return response({"error": "login_not_configured"}, 503)
-        challenge, proof, code = await web_login.create(redis)
+        if request.content_length and request.content_length > 4096:
+            return response({'error': 'payload_too_large'}, 413)
+        body = {}
+        if request.can_read_body:
+            payload = BoundedBuffer(4096)
+            try:
+                async for chunk in request.content.iter_chunked(1024):
+                    payload.write(chunk)
+            except ValueError:
+                return response({'error': 'payload_too_large'}, 413)
+            body = json.loads(payload.getvalue())
+        if not isinstance(body, dict):
+            return response({'error': 'invalid_payload'}, 400)
+        context = await staff.login_context(body, request.app['password_slots']) if body.get('username') else {}
+        challenge, proof, code = await web_login.create(redis, context)
         result = response({"url": f"https://t.me/{username}?start=login_{challenge}", "code": code, "expiresIn": web_login.TTL})
         result.set_cookie(web_login.COOKIE, f"{challenge}.{proof}", max_age=web_login.TTL,
                           httponly=True, samesite="Strict", path="/api/auth/bot",
                           secure=settings.app_env.lower() == "production" or request.headers.get("X-Forwarded-Proto", request.scheme) == "https")
         return result
-    status, telegram_id = await web_login.consume(redis, request.cookies.get(web_login.COOKIE, ""))
+    status, context = await web_login.consume(redis, request.cookies.get(web_login.COOKIE, ""), with_context=True)
+    account = await staff.finish_login(context, context['telegram_id']) if status == 'approved' else None
+    if status == 'approved' and not account:
+        status = 'denied'
     result = response({"status": status})
     if status == "approved":
-        token = await _new_session(request, telegram_id)
+        token = await _new_session(request, account['telegram_id'], auth_method=account['auth_mode'])
         _set_session_cookie(result, token)
     if status != "pending":
         result.del_cookie(web_login.COOKIE, path="/api/auth/bot")
@@ -493,7 +509,101 @@ async def logout(request: web.Request):
 
 async def session(request: web.Request):
     actor = request["actor"]
-    return response({"role": actor["role"], "telegramId": actor["telegram_id"], "csrf": actor["csrf"]})
+    return response({"role": actor["role"], "telegramId": actor["telegram_id"], "csrf": actor["csrf"], "staffId": actor['staff_id'], "displayName": actor['display_name'], "username": actor['username'], "permissions": sorted(staff.PERMISSIONS) if actor['role'] in {'leader', 'platform'} else actor['permissions']})
+
+
+async def staff_profile(request):
+    actor = request['actor']
+    if request.method == 'POST':
+        body = await request.json()
+        name = body.get('display_name') if isinstance(body, dict) else None
+        if not isinstance(name, str) or not 1 <= len(name.strip()) <= 80:
+            return response({'error': 'invalid_profile'}, 400)
+        async with db.acquire() as c, c.transaction():
+            await c.execute('UPDATE staff_accounts SET display_name=$2,updated_at=NOW() WHERE id=$1', actor['staff_id'], name.strip())
+            await staff.audit(c, actor, 'staff_profile', 'staff', actor['staff_id'], {'name': name.strip()})
+        return response({'ok': True})
+    return response(staff.public(actor))
+
+
+async def staff_team(request):
+    actor = request['actor']
+    staff.require(actor, 'team')
+    if request.method == 'POST':
+        if await _rate_limited(request, 'team', 20):
+            return response({'error': 'rate_limited'}, 429)
+        body = await request.json()
+        if not isinstance(body, dict):
+            return response({'error': 'invalid_payload'}, 400)
+        try:
+            return response(await staff.team_change(actor, body))
+        except (ValueError, TypeError):
+            return response({'error': 'invalid_staff_data'}, 400)
+        except asyncpg.UniqueViolationError:
+            return response({'error': 'account_or_leader_exists'}, 409)
+    page = _safe_page(request)
+    async with db.acquire() as c:
+        rows = await c.fetch("SELECT * FROM staff_accounts WHERE $1 OR role<>'platform' ORDER BY id LIMIT 20 OFFSET $2", actor['role'] == 'platform', (page-1)*20)
+        total = await c.fetchval("SELECT COUNT(*) FROM staff_accounts WHERE $1 OR role<>'platform'", actor['role'] == 'platform')
+    return response({'items': [staff.public(row) for row in rows], 'total': total, 'page': page, 'permissions': staff.PERMISSIONS, 'templates': staff.TEMPLATES})
+
+
+async def staff_audit(request):
+    staff.require(request['actor'], 'team')
+    before = request.query.get('before', '')
+    if before and (not before.isdigit() or len(before) > 18):
+        return response({'error': 'invalid_cursor'}, 400)
+    async with db.acquire() as c:
+        rows = await c.fetch('''SELECT a.id,a.actor_staff_id,a.actor_name,a.action,a.target_type,a.target_id,a.created_at,a.metadata
+            FROM audit_logs a LEFT JOIN staff_accounts s ON s.id=a.actor_staff_id
+            WHERE ($1::bigint IS NULL OR a.id<$1) AND ($2 OR s.role IS DISTINCT FROM 'platform')
+            ORDER BY a.id DESC LIMIT 51''', int(before) if before else None, request['actor']['role'] == 'platform')
+    return response({'items': [dict(row) for row in rows[:50]], 'next': rows[49]['id'] if len(rows) > 50 else None})
+
+
+async def collaboration(request):
+    actor = request['actor']
+    kind, target_id = request.match_info['kind'], int(request.match_info['target_id'])
+    permission = 'chats.read' if kind == 'thread' else 'orders.read'
+    staff.require(actor, permission)
+    table = 'users' if kind == 'thread' else 'orders'
+    async with db.acquire() as c, c.transaction():
+        if not await c.fetchval(f'SELECT id FROM {table} WHERE id=$1', target_id):
+            raise web.HTTPNotFound()
+        if request.method == 'POST':
+            staff.require(actor, 'chats.reply' if kind == 'thread' else 'orders.review')
+            body = await request.json()
+            if not isinstance(body, dict):
+                return response({'error': 'invalid_payload'}, 400)
+            if body.get('action') == 'note':
+                text = body.get('text')
+                if not isinstance(text, str) or not 1 <= len(text.strip()) <= 2000:
+                    return response({'error': 'invalid_note'}, 400)
+                await c.execute('INSERT INTO staff_notes(target_type,target_id,staff_id,author_name,body) VALUES($1,$2,$3,$4,$5)', kind, target_id, actor['staff_id'], actor['display_name'], text.strip())
+                await staff.audit(c, actor, 'internal_note', kind, target_id)
+            elif body.get('action') == 'assign':
+                assignee = body.get('staff_id')
+                if assignee is not None:
+                    if type(assignee) is not int:
+                        return response({'error': 'invalid_assignee'}, 400)
+                    target = await c.fetchrow("SELECT * FROM staff_accounts WHERE id=$1 AND status='active'", assignee)
+                    if not target or not staff.can(target, permission):
+                        return response({'error': 'invalid_assignee'}, 400)
+                if actor['role'] == 'staff' and assignee not in {None, actor['staff_id']}:
+                    raise web.HTTPForbidden()
+                await c.execute('INSERT INTO staff_assignments(target_type,target_id) VALUES($1,$2) ON CONFLICT DO NOTHING', kind, target_id)
+                current = await c.fetchrow('SELECT * FROM staff_assignments WHERE target_type=$1 AND target_id=$2 FOR UPDATE', kind, target_id)
+                if body.get('version', 1) != current['version'] or actor['role'] == 'staff' and current['staff_id'] not in {None, actor['staff_id']}:
+                    return response({'error': 'assignment_changed'}, 409)
+                await c.execute('UPDATE staff_assignments SET staff_id=$3,version=version+1,updated_at=NOW() WHERE target_type=$1 AND target_id=$2', kind, target_id, assignee)
+                await staff.audit(c, actor, 'assigned', kind, target_id, {'staff_id': assignee})
+            else:
+                return response({'error': 'invalid_action'}, 400)
+        assignment = await c.fetchrow('''SELECT a.staff_id,a.version,s.display_name FROM staff_assignments a
+            LEFT JOIN staff_accounts s ON s.id=a.staff_id WHERE a.target_type=$1 AND a.target_id=$2''', kind, target_id)
+        notes = await c.fetch('SELECT id,author_name,body,created_at FROM staff_notes WHERE target_type=$1 AND target_id=$2 ORDER BY id DESC LIMIT 30', kind, target_id)
+        members = await c.fetch("SELECT id,display_name FROM staff_accounts WHERE status='active' AND (role IN ('leader','platform') OR $1=ANY(permissions)) ORDER BY display_name LIMIT 100", permission)
+    return response({'assignment': dict(assignment) if assignment else {'staff_id': None, 'version': 1}, 'notes': [dict(n) for n in notes], 'members': [dict(m) for m in members]})
 
 
 def _broadcast_update(app: web.Application, payload: str):
@@ -563,11 +673,20 @@ async def realtime_events(request: web.Request):
         while True:
             try:
                 payload = await asyncio.wait_for(queue.get(), timeout=20)
-                if not await _session_actor(request):
+                current_actor = await _session_actor(request)
+                if not current_actor:
+                    await result.write(b'event: session-expired\ndata: {}\n\n')
                     break
+                table = json.loads(payload).get('table')
+                needed = {'support_messages':'chats.read', 'users':'identity.read', 'orders':'records.read', 'products':'records.read', 'sales_gate':'sales.manage', 'staff_accounts':'team', 'staff_assignments':'collaboration', 'staff_notes':'collaboration'}.get(table, 'team')
+                if table == 'orders' and staff.can(current_actor, 'sales.read'):
+                    needed = None
+                if not staff.can(current_actor, needed):
+                    continue
                 await result.write(f"event: update\ndata: {payload}\n\n".encode())
             except TimeoutError:
                 if not await _session_actor(request):
+                    await result.write(b'event: session-expired\ndata: {}\n\n')
                     break
                 await result.write(b": keepalive\n\n")
     except (ConnectionResetError, RuntimeError):
@@ -597,11 +716,21 @@ async def dashboard(request: web.Request):
             data["commissionPercent"] = settings.development_team_percent
         return data
 
-    return response(await _cached(request, f"dashboard:{role}:{period}", 2, load))
+    data = dict(await _cached(request, f"dashboard:{role}:{period}", 2, load))
+    # Cached aggregates are shared, but the returned payload is permission-scoped.
+    if not staff.can(request['actor'], 'sales.read'):
+        data['sales'] = {'period': period, 'revenue': 0, 'orders': 0, 'trend': []}
+    data['counts'] = dict(data['counts'])
+    if not staff.can(request['actor'], 'chats.read'):
+        data['counts']['unread'] = 0
+    if not staff.can(request['actor'], 'orders.read'):
+        for key in ('actionable', 'receipts', 'new_orders', 'designing', 'needs_info'):
+            data['counts'][key] = 0
+    return response(data)
 
 
 async def sales_gate(request: web.Request):
-    require_sensi(request)
+    staff.require(request['actor'], 'sales.manage')
     body = await request.json()
     is_open = body.get("open") if isinstance(body, dict) else None
     if not isinstance(is_open, bool):
@@ -613,7 +742,7 @@ async def sales_gate(request: web.Request):
 
 
 async def orders(request: web.Request):
-    require_sensi(request)
+    staff.require(request['actor'], 'orders.read')
     page = _safe_page(request)
     status = request.query.get("status")
     query = request.query.get("q", "")
@@ -629,7 +758,7 @@ async def order_detail(request: web.Request):
     if not row or not management_record_visible(request["actor"]["role"], row):
         raise web.HTTPNotFound()
     result = _web_order(row)
-    if request["actor"]["role"] == "sensi":
+    if staff.can(request['actor'], 'orders.read'):
         async with db.acquire() as c:
             last_request = await c.fetchval("SELECT metadata->>'message' FROM audit_logs WHERE target_type='order' AND target_id=$1 AND action='web_needs_info' ORDER BY created_at DESC,id DESC LIMIT 1", row["id"])
         result["info_request"] = last_request
@@ -637,7 +766,7 @@ async def order_detail(request: web.Request):
 
 
 async def order_action(request: web.Request):
-    require_sensi(request)
+    staff.require(request['actor'], 'orders.read')
     order_id = int(request.match_info["order_id"])
     body = await request.json()
     if not isinstance(body, dict):
@@ -645,6 +774,7 @@ async def order_action(request: web.Request):
     action = body.get("action")
     if action not in ("approve_receipt", "reject_receipt", "in_progress", "needs_info"):
         return response({"error": "invalid_action"}, 400)
+    staff.require(request['actor'], 'payments.review' if action in {'approve_receipt', 'reject_receipt'} else 'orders.review')
     info = body.get("message", "")
     if action == "needs_info" and (not isinstance(info, str) or not info.strip() or len(info.strip()) > 1000):
         return response({"error": "message_required"}, 400)
@@ -684,18 +814,36 @@ async def order_action(request: web.Request):
 
 
 async def upload_plan(request: web.Request):
-    require_sensi(request)
+    staff.require(request['actor'], 'orders.deliver')
     order_id = int(request.match_info["order_id"])
     order = await repo.get_order(order_id)
     if not order or order["status"] not in {"in_progress", "ready"}:
         return response({"error": "invalid_transition"}, 409)
+    if request.app['upload_slots'].locked():
+        return response({'error': 'uploads_busy'}, 503)
+    try:
+        async with asyncio.timeout(65), request.app['upload_slots'], db.acquire() as c, c.transaction():
+            locked = await c.fetchval('SELECT pg_try_advisory_xact_lock(hashtextextended($1,0))', f'plan-delivery:{order_id}')
+            if not locked:
+                return response({'error': 'delivery_in_progress'}, 409)
+            # Recheck inside the cross-process lock: another coach may have delivered.
+            order = await repo.get_order(order_id)
+            if not order or order['status'] not in {'in_progress', 'ready'}:
+                return response({'error': 'invalid_transition'}, 409)
+            return await _upload_plan(request, order)
+    except TimeoutError:
+        return response({'error': 'upload_timeout'}, 503)
+
+
+async def _upload_plan(request, order):
+    order_id = order['id']
     reader = await request.multipart()
     part = await reader.next()
     if not part or part.name != "file" or not part.filename:
         return response({"error": "file_required"}, 400)
     filename = Path(part.filename.replace("\\", "/").rsplit("/", 1)[-1]).name[:150]
     limit = settings.max_plan_file_mb * 1024 * 1024
-    async with request.app["upload_slots"]:
+    async with asyncio.timeout(60):
         chunks, size = [], 0
         while chunk := await part.read_chunk():
             size += len(chunk)
@@ -717,7 +865,7 @@ async def upload_plan(request: web.Request):
 
 
 async def threads(request: web.Request):
-    require_sensi(request)
+    staff.require(request['actor'], 'chats.read')
     page = _safe_page(request)
     query, unread = request.query.get("q", ""), request.query.get("unread") == "1"
     async def load():
@@ -727,7 +875,7 @@ async def threads(request: web.Request):
 
 
 async def thread_detail(request: web.Request):
-    require_sensi(request)
+    staff.require(request['actor'], 'chats.read')
     user_id = int(request.match_info["user_id"])
     user = await repo.get_user_by_id(user_id)
     if not user:
@@ -738,7 +886,7 @@ async def thread_detail(request: web.Request):
 
 
 async def reply_message(request: web.Request):
-    require_sensi(request)
+    staff.require(request['actor'], 'chats.reply')
     if await _rate_limited(request, "reply", 30):
         result = response({"error": "rate_limited"}, 429)
         result.headers["Retry-After"] = "60"
@@ -898,7 +1046,7 @@ async def customer_detail(request: web.Request):
     if not user or not management_record_visible(request["actor"]["role"], customer_orders):
         raise web.HTTPNotFound()
     history = await repo.profile_history_for_user(user_id, 20)
-    messages = await repo.support_messages_for_user(user_id, 20) if request["actor"]["role"] == "sensi" else []
+    messages = await repo.support_messages_for_user(user_id, 20) if staff.can(request['actor'], 'chats.read') else []
     safe_history = []
     for item in history:
         item = dict(item)
@@ -944,7 +1092,7 @@ async def order_body_photo(request: web.Request):
 
 
 async def order_receipt(request: web.Request):
-    require_sensi(request)
+    staff.require(request['actor'], 'payments.review')
     order = await repo.get_order(int(request.match_info["order_id"]))
     if not order or not order.get("receipt_file_id"):
         raise web.HTTPNotFound()
@@ -953,7 +1101,7 @@ async def order_receipt(request: web.Request):
 
 
 async def support_message_media(request: web.Request):
-    require_sensi(request)
+    staff.require(request['actor'], 'chats.read')
     message = await repo.support_message_media(int(request.match_info["message_id"]))
     if not message or not message.get("file_id"):
         raise web.HTTPNotFound()
@@ -976,10 +1124,12 @@ async def sales(request: web.Request):
 
 async def build_app():
     await db.connect()
+    await staff.bootstrap()
     redis = Redis.from_url(settings.redis_url, encoding="utf-8", decode_responses=True)
     await redis.ping()
     app = web.Application(middlewares=[security_headers, errors, auth], client_max_size=(settings.max_plan_file_mb + 1) * 1024 * 1024)
     app["redis"] = redis
+    app['password_slots'] = asyncio.Semaphore(2)
     app["bot"] = Bot(settings.bot_token)
     app["upload_slots"] = asyncio.Semaphore(4)
     app["avatar_slots"] = asyncio.Semaphore(3)
@@ -992,6 +1142,9 @@ async def build_app():
     app["realtime_task"] = asyncio.create_task(_listen_for_updates(app), name="web-realtime-listener")
     app.add_routes(
         [
+            web.get('/api/staff/profile', staff_profile), web.post('/api/staff/profile', staff_profile),
+            web.get('/api/staff/team', staff_team), web.post('/api/staff/team', staff_team), web.get('/api/staff/audit', staff_audit),
+            web.get('/api/collaboration/{kind:thread|order}/{target_id:\\d+}', collaboration), web.post('/api/collaboration/{kind:thread|order}/{target_id:\\d+}', collaboration),
             web.get("/", index), web.get("/health", health), web.get("/manifest.webmanifest", manifest), web.get("/service-worker.js", service_worker), web.get("/assets/{name}", asset),
             web.get("/api/config", config), web.get("/auth/telegram", telegram_widget_login), web.post("/api/auth/telegram", telegram_webapp_login),
             web.post("/api/auth/bot/start", bot_login), web.post("/api/auth/bot/poll", bot_login),

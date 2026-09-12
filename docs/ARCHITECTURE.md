@@ -1,6 +1,6 @@
 # Architecture and development
 
-One coach, one deployment, three roles. This is not a multi-tenant platform.
+One coach business, one deployment, multiple staff. This is not a multi-tenant platform.
 
 ## Boundaries
 
@@ -10,6 +10,7 @@ One coach, one deployment, three roles. This is not a multi-tenant platform.
 - `app/db/repositories.py`: parameterized SQL and atomic business transitions. Money is stored as toman despite legacy `price_irr`; only the gateway adapter converts to rial.
 - `app/services/payment.py`: gateway request/verification. `payment_attempts` preserves earlier retry authorities; settlement is atomic and cannot rewrite an already-paid order.
 - `app/services/web_login.py`: short-lived browser-bound Telegram approval, single-use Redis redemption.
+- `app/services/staff.py`: database-backed accounts, permission catalog, password verification, invitations, hierarchy and audit. See `docs/STAFF_ACCESS.md` for onboarding and deployment.
 - `app/utils/media.py`: shared file-signature allowlist and bounded buffers. Signature checks are not malware scanning.
 - `web/`: Next.js/React/TypeScript PWA. The client never decides permissions or writes directly to the database.
 - `alembic/versions/`: ordered schema migrations. Never reset volumes to deploy a migration.
