@@ -37,6 +37,10 @@ Security review used the boundary-first `security-scan` / `fix-finding` workflow
 - Required checks / force-push protection on `main` could not be enabled: GitHub returned HTTP 403 requiring Pro for this private repository. Privacy was preserved. Until an eligible plan is enabled, passing CI is visible but not an enforced merge/push gate.
 - The pre-existing nested Next.js starter Git history was preserved in an ignored local backup; the actual frontend files are now part of the single repository, not a broken submodule.
 
+## Dependency remediation
+
+After the initial push, Dependabot identified three affected packages. Updated `python-dotenv` to 1.2.2 (GHSA-mf9w-mj56-hr94), `pytest` to 9.0.3 (GHSA-6w46-j5rx-g56g), and constrained transitive `js-yaml` to 4.3.2 (GHSA-2883-xcg3-v3hh). `pytest-asyncio` moved to 1.4.0 because the older plugin required pytest <9. Local 152 tests, pip dependency consistency, ESLint and TypeScript pass with the corrected versions. Routine unrelated major-version Dependabot PRs are not merged automatically.
+
 ## Not certified / release prerequisites
 
 - Real merchant payment, webhook/public HTTPS configuration and an actual staff Telegram/browser login round trip need acceptance testing. Current local runtime is not automatically switched to production by these changes.
