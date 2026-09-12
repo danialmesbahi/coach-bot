@@ -7,7 +7,7 @@ SQLAlchemy==2.0.43
 psycopg2-binary==2.9.10
 pydantic-settings==2.10.1
 python-dotenv==1.2.2
-jdatetime==5.2.0
+jdatetime==6.1.0
 tzdata==2025.2
 pytest==9.0.3
 pytest-asyncio==1.4.0
