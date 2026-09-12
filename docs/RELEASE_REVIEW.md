@@ -27,6 +27,15 @@ Security review used the boundary-first `security-scan` / `fix-finding` workflow
 - Migration `0016_payment_attempts` applied after local PostgreSQL backup. Backup archive is excluded from Git.
 - New containers started. UI and health: 200; unauthenticated private API: 401; development login: 404.
 - GitHub checks are configured to run tests plus full migrations/integration on disposable PostgreSQL/Redis and build the frontend.
+- GitHub run `34666718905` passed both `backend` and `frontend`, including fresh-database migrations and the integration script. This independently checks the committed baseline, not just the developer machine.
+
+## Repository controls
+
+- Private repository: `https://github.com/danialmesbahi/coach-bot`.
+- Dependency vulnerability alerts and automated security fixes enabled; weekly Dependabot checks configured.
+- Workflow token permissions default to read-only; workflow approval of pull requests disabled. CI actions are pinned to verified commit SHAs.
+- Required checks / force-push protection on `main` could not be enabled: GitHub returned HTTP 403 requiring Pro for this private repository. Privacy was preserved. Until an eligible plan is enabled, passing CI is visible but not an enforced merge/push gate.
+- The pre-existing nested Next.js starter Git history was preserved in an ignored local backup; the actual frontend files are now part of the single repository, not a broken submodule.
 
 ## Not certified / release prerequisites
 
