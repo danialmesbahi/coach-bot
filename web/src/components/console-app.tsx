@@ -1,4 +1,7 @@
 "use client";
+import { SelectMenu } from "@/components/select-menu";
+import { PasswordField } from "@/components/password-field";
+
 import { chatViewport } from "@/lib/chat-viewport";
 /* eslint-disable @next/next/no-img-element -- Telegram avatars are authenticated same-origin streams. */
 
@@ -161,36 +164,6 @@ function Pager({ page, total, size, t, onChange }: { page: number; total: number
   </nav>;
 }
 
-function SelectMenu({ label, value, options, onChange, compact = false, compactDefault }: { label: string; value: string; options: Array<[string, string]>; onChange: (value: string) => void; compact?: boolean; compactDefault?: string }) {
-  const [open, setOpen] = useState(false);
-  const root = useRef<HTMLDivElement>(null);
-  const trigger = useRef<HTMLButtonElement>(null);
-  const list = useRef<HTMLDivElement>(null);
-  const selected = options.find(([key]) => key === value)?.[1] ?? options[0]?.[1];
-  const focusOption = (offset: number) => {
-    const items = Array.from(list.current?.querySelectorAll<HTMLButtonElement>('[role="option"]') ?? []);
-    if (!items.length) return;
-    const current = Math.max(0, items.indexOf(document.activeElement as HTMLButtonElement));
-    items[(current + offset + items.length) % items.length]?.focus();
-  };
-  const openAndFocus = () => { setOpen(true); requestAnimationFrame(() => (list.current?.querySelector<HTMLButtonElement>('[aria-selected="true"]') ?? list.current?.querySelector<HTMLButtonElement>('[role="option"]'))?.focus()); };
-  useEffect(() => {
-    const close = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node)) setOpen(false); };
-    document.addEventListener("pointerdown", close); return () => document.removeEventListener("pointerdown", close);
-  }, []);
-  return <div className={`select-menu ${compact ? "compact" : ""} ${open ? "open" : ""}`} ref={root}>
-    <span className="select-label">{label}</span>
-    <button ref={trigger} type="button" className="select-trigger" aria-haspopup="listbox" aria-expanded={open} onClick={() => open ? setOpen(false) : openAndFocus()} onKeyDown={(event) => { if (["ArrowDown", "ArrowUp"].includes(event.key)) { event.preventDefault(); openAndFocus(); } }}>
-      <span>{compact && value === options[0]?.[0] ? compactDefault ?? selected : selected}</span><ChevronDown aria-hidden="true" />
-    </button>
-    {open && <div ref={list} className="select-options" role="listbox" tabIndex={-1} onKeyDown={(event) => { if (event.key === "Escape") { setOpen(false); trigger.current?.focus(); } else if (event.key === "ArrowDown") { event.preventDefault(); focusOption(1); } else if (event.key === "ArrowUp") { event.preventDefault(); focusOption(-1); } }}>
-      {options.map(([key, text]) => <button type="button" role="option" aria-selected={key === value} key={key} onClick={() => { onChange(key); setOpen(false); trigger.current?.focus(); }}>
-        <span>{text}</span>{key === value && <Check aria-hidden="true" />}
-      </button>)}
-    </div>}
-  </div>;
-}
-
 function TrendChart({ data, lang }: { data: DashboardData["sales"]; lang: Lang }) {
   const values = data.trend.map((item) => {
     const value = Number(item.revenue);
@@ -221,70 +194,39 @@ function TrendChart({ data, lang }: { data: DashboardData["sales"]; lang: Lang }
 }
 
 function Login({ lang }: { lang: Lang }) {
-  const t = translator(lang);
-  const [request, setRequest] = useState<{url:string;code:string;expiresAt:number} | null>(null);
+  const fa = lang === "fa";
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
-  const [credentials,setCredentials] = useState(()=>({username:"",password:"",invite:typeof window==="undefined"?"":new URLSearchParams(location.hash.slice(1)).get("invite")??""}));
-  const [passwordMode,setPasswordMode] = useState(Boolean(credentials.invite));
-  useEffect(() => {
-    const token = new URLSearchParams(location.hash.slice(1)).get("invite");
-    if(token) history.replaceState(null,"",location.pathname);
-  }, []);
-  const [message, setMessage] = useState<"error" | "expired" | "denied" | null>(null);
-  const begin = async () => {
-    setBusy(true); setMessage(null);
+  const [message, setMessage] = useState("");
+  const begin = async (event: FormEvent) => {
+    event.preventDefault();
+    if (busy) return;
+    setBusy(true); setMessage("");
     try {
-      const result = await api<{url:string;code:string;expiresIn:number}>("/api/auth/bot/start", "", {method:"POST",headers:{"X-Login-Request":"1"},body:passwordMode?JSON.stringify(credentials):undefined});
-      setCredentials(old=>({...old,password:""}));
-      setRequest({...result,expiresAt:Date.now()+result.expiresIn*1000});
-    } catch(error) { setMessage(error instanceof ApiError && [401,403].includes(error.status) ? "denied" : "error"); }
-    finally { setBusy(false); }
+      await api("/api/auth/password", "", { method:"POST", headers:{"X-Login-Request":"1"}, body:JSON.stringify({username:username.trim(),password}) });
+      setPassword(""); location.reload();
+    } catch (error) {
+      setMessage(error instanceof ApiError && error.status === 429
+        ? (fa ? "تلاش‌های زیادی انجام شده؛ چند دقیقه صبر کن و دوباره امتحان کن." : "Too many attempts. Wait a few minutes before trying again.")
+        : error instanceof ApiError && error.status === 401
+          ? (fa ? "نام کاربری یا رمز عبور درست نیست، یا حساب فعال نیست." : "Invalid username or password, or account is inactive.")
+          : (fa ? "ورود انجام نشد؛ اتصال را بررسی و دوباره تلاش کن." : "Could not sign in. Check your connection and try again."));
+    } finally { setBusy(false); }
   };
-  useEffect(() => {
-    if (!request) return;
-    const controller = new AbortController();
-    let timer: ReturnType<typeof setTimeout>;
-    let running = false;
-    const poll = async () => {
-      if (running || controller.signal.aborted) return;
-      clearTimeout(timer);
-      if (Date.now() >= request.expiresAt) { setRequest(null); setMessage("expired"); return; }
-      if (document.hidden) { timer = setTimeout(poll,3000); return; }
-      running = true;
-      let again = true;
-      try {
-        const result = await api<{status:"pending" | "approved" | "expired" | "denied"}>("/api/auth/bot/poll", "", {method:"POST",headers:{"X-Login-Request":"1"},signal:controller.signal});
-        if (controller.signal.aborted) return;
-        if (result.status === "approved") { again=false; location.reload(); }
-        else if (result.status !== "pending") { again=false; setRequest(null); setMessage(result.status); }
-      } catch {
-        if (!controller.signal.aborted) { again=false; setRequest(null); setMessage("error"); }
-      } finally {
-        running=false;
-        if (again && !controller.signal.aborted) timer=setTimeout(poll,3000);
-      }
-    };
-    void poll();
-    document.addEventListener("visibilitychange",poll);
-    return () => { controller.abort(); clearTimeout(timer); document.removeEventListener("visibilitychange",poll); };
-  }, [request]);
-  return <main className="login-shell">
-    <div className="login-orb" aria-hidden="true" />
+  return <main className="login-shell" dir={fa?"rtl":"ltr"}>
+    <div className="login-orb" aria-hidden="true"/>
     <Glass className="login-card">
       <div className="brand-mark"><span>S</span></div>
-      <p className="eyebrow">SENSI CONSOLE</p><h1>{t("loginTitle")}</h1><p>{t("loginText")}</p>
-      {!request && <><div className="staff-tabs"><button aria-pressed={!passwordMode} onClick={()=>setPasswordMode(false)}>{lang==="fa"?"ورود تلگرام":"Telegram"}</button><button aria-pressed={passwordMode} onClick={()=>setPasswordMode(true)}>{lang==="fa"?"حساب همکار":"Staff account"}</button></div>{passwordMode&&<form id="staff-login" className="staff-form" onSubmit={event=>{event.preventDefault();void begin();}}><label>{lang==="fa"?"نام کاربری":"Username"}<input autoComplete="username" required dir="ltr" maxLength={40} value={credentials.username} onChange={event=>setCredentials({...credentials,username:event.target.value})}/></label><label>{credentials.invite?(lang==="fa"?"انتخاب رمز جدید (۱۲ تا ۱۲۸ نویسه)":"Choose password (12–128 characters)"):(lang==="fa"?"رمز عبور":"Password")}<input type="password" required minLength={12} maxLength={128} autoComplete={credentials.invite?"new-password":"current-password"} value={credentials.password} onChange={event=>setCredentials({...credentials,password:event.target.value})}/></label></form>}</>}
-      {request ? <>
-        <p>{lang === "fa" ? "این کد را با پیام ربات تطبیق بده و ورود را تأیید کن؛ سپس به همین صفحه برگرد." : "Match this code in the bot, approve your login, then return to this page."}</p>
-        <strong dir="ltr" style={{fontSize:28,letterSpacing:6}}>{request.code}</strong>
-        <a className="button primary wide" href={request.url} target="_blank" rel="noopener noreferrer"><Send/>{lang === "fa" ? "باز کردن تلگرام و تأیید ورود" : "Open Telegram & approve"}</a>
-        <span role="status">{lang === "fa" ? "منتظر تأیید تو در تلگرام…" : "Waiting for your approval in Telegram…"}</span>
-      </> : <button className="button primary wide" disabled={busy} form={passwordMode?"staff-login":undefined} type={passwordMode?"submit":"button"} onClick={passwordMode?undefined:begin}>
-        {busy ? <LoaderCircle className="spin"/> : <Send/>}
-        {busy ? (lang === "fa" ? "در حال آماده‌سازی…" : "Preparing…") : (lang === "fa" ? "ادامه و تأیید تلگرام" : "Continue & verify Telegram")}
-      </button>}
-      {message && <p role="alert">{message === "expired" ? (lang === "fa" ? "درخواست منقضی شد؛ دوباره ورود را بزن." : "Request expired. Start again.") : message === "denied" ? (lang === "fa" ? "ورود رد شد یا این حساب دسترسی مدیریت ندارد." : "Login denied or this account has no management access.") : (lang === "fa" ? "اتصال برقرار نشد؛ دوباره تلاش کن. اگر ادامه داشت، سرویس‌های ربات و پنل باید به‌روز شوند." : "Could not connect. Try again; if this continues, update the bot and panel services.")}</p>}
-      <small><LockKeyhole aria-hidden="true" />{t("secureLogin")}</small>
+      <p className="eyebrow">SENSI CONSOLE</p>
+      <h1>{fa?"ورود به فضای تیم":"Sign in to your workspace"}</h1>
+      <form className="staff-form" onSubmit={begin}>
+        <label>{fa?"نام کاربری":"Username"}<input required autoComplete="username" autoCapitalize="none" spellCheck={false} dir="ltr" maxLength={40} value={username} onChange={e=>setUsername(e.target.value)}/></label>
+        <PasswordField lang={lang} value={password} onChange={setPassword} newPassword={false}/>
+        {message&&<p role="alert">{message}</p>}
+        <button className="button primary wide" disabled={busy}>{busy?<LoaderCircle className="spin"/>:<LockKeyhole/>}{fa?(busy?"در حال ورود…":"ورود"):(busy?"Signing in…":"Sign in")}</button>
+        <p>{fa?"رمزت را فراموش کردی؟ برای تعیین رمز جدید با مدیر بالاتر خودت تماس بگیر.":"Forgot your password? Contact your supervising manager for a reset."}</p>
+      </form>
     </Glass>
   </main>;
 }

@@ -496,22 +496,32 @@ async def attach_plan(order_id: int, file_id: str, file_name: str | None, plan_t
         """, order_id, file_id, file_name, plan_type)
         return dict(r) if r else None
 
-async def add_audit(actor: int, action: str, target_type: str | None = None, target_id: int | None = None, metadata: dict | None = None):
-    async with db.acquire() as c:
+async def _write_audit(c, actor: int | dict, action, target_type, target_id, metadata=None):
+    if isinstance(actor, dict):
+        from app.services.staff import audit
+        await audit(c, actor, action, target_type, target_id, metadata)
+    else:
         await c.execute('''INSERT INTO audit_logs(actor_telegram_id,action,target_type,target_id,metadata,actor_staff_id,actor_name)
             VALUES($1,$2,$3,$4,$5::jsonb,(SELECT id FROM staff_accounts WHERE telegram_id=$1),(SELECT display_name FROM staff_accounts WHERE telegram_id=$1))''', actor, action, target_type, target_id, json.dumps(metadata or {}, ensure_ascii=False))
 
-async def add_support_message(tg_id: int, message_id: int, direction: str = 'customer', sender_telegram_id: int | None = None, reply_to_message_id: int | None = None, content_type: str = 'text', content_text: str | None = None, file_id: str | None = None, file_name: str | None = None, mime_type: str | None = None, file_size: int | None = None):
+
+async def add_audit(actor: int | dict, action: str, target_type: str | None = None, target_id: int | None = None, metadata: dict | None = None):
+    async with db.acquire() as c:
+        await _write_audit(c, actor, action, target_type, target_id, metadata)
+
+async def add_support_message(tg_id: int, message_id: int, direction: str = 'customer', sender_telegram_id: int | dict | None = None, reply_to_message_id: int | None = None, content_type: str = 'text', content_text: str | None = None, file_id: str | None = None, file_name: str | None = None, mime_type: str | None = None, file_size: int | None = None):
+    actor = sender_telegram_id if isinstance(sender_telegram_id, dict) else None
+    sender = actor.get('telegram_id') if actor else sender_telegram_id or tg_id
     async with db.acquire() as c:
         u = await c.fetchrow("SELECT id FROM users WHERE telegram_id=$1", tg_id)
         if u:
             await c.execute(
                 """INSERT INTO support_messages(user_id,message_id,direction,sender_telegram_id,reply_to_message_id,content_type,content_text,file_id,file_name,mime_type,file_size,sender_staff_id,sender_name)
                    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,
-                   (SELECT id FROM staff_accounts WHERE telegram_id=$4 AND $3='sensi'),
-                   (SELECT display_name FROM staff_accounts WHERE telegram_id=$4 AND $3='sensi'))""",
-                u['id'], message_id, direction, sender_telegram_id or tg_id, reply_to_message_id, content_type, content_text, file_id,
-                file_name, mime_type, file_size
+                   COALESCE($12::bigint,(SELECT id FROM staff_accounts WHERE telegram_id=$4 AND $3='sensi')),
+                   COALESCE($13::text,(SELECT display_name FROM staff_accounts WHERE telegram_id=$4 AND $3='sensi')))""",
+                u['id'], message_id, direction, sender, reply_to_message_id, content_type, content_text, file_id,
+                file_name, mime_type, file_size, actor['staff_id'] if actor else None, actor['display_name'] if actor else None
             )
 
 async def support_threads(page: int = 1, page_size: int = 10, query: str = '', unread_only: bool = False):
@@ -637,21 +647,21 @@ async def submit_receipt(order_id:int, file_id:str, receipt_type:str='photo'):
         r=await c.fetchrow("UPDATE orders SET receipt_file_id=$2, receipt_type=$3, payment_status='awaiting_review', status='awaiting_receipt', updated_at=NOW() WHERE id=$1 AND payment_method='card_to_card' AND status IN ('awaiting_payment','payment_rejected') RETURNING *", order_id,file_id,receipt_type)
         return dict(r) if r else None
 
-async def approve_card_payment(order_id:int, actor:int):
+async def approve_card_payment(order_id:int, actor:int | dict):
     async with db.acquire() as c:
         async with c.transaction():
             r=await c.fetchrow("UPDATE orders SET payment_status='paid', status='paid', paid_at=COALESCE(paid_at,NOW()), updated_at=NOW() WHERE id=$1 AND payment_method='card_to_card' AND status='awaiting_receipt' RETURNING id",order_id)
             if not r: return None
-            await c.execute("INSERT INTO audit_logs(actor_telegram_id,action,target_type,target_id,metadata) VALUES($1,'approve_card_payment','order',$2,'{}'::jsonb)",actor,order_id)
+            await _write_audit(c, actor, 'approve_card_payment', 'order', order_id)
             full=await c.fetchrow("SELECT o.*,p.code AS product_code,p.title AS product_title,u.telegram_id,u.name,u.phone FROM orders o JOIN products p ON p.id=o.product_id JOIN users u ON u.id=o.user_id WHERE o.id=$1",order_id)
             return dict(full) if full else None
 
-async def reject_card_payment(order_id:int, actor:int):
+async def reject_card_payment(order_id:int, actor:int | dict):
     async with db.acquire() as c:
         async with c.transaction():
             r=await c.fetchrow("UPDATE orders SET payment_status='rejected', status='payment_rejected', updated_at=NOW() WHERE id=$1 AND payment_method='card_to_card' AND status='awaiting_receipt' RETURNING id",order_id)
             if not r: return None
-            await c.execute("INSERT INTO audit_logs(actor_telegram_id,action,target_type,target_id,metadata) VALUES($1,'reject_card_payment','order',$2,'{}'::jsonb)",actor,order_id)
+            await _write_audit(c, actor, 'reject_card_payment', 'order', order_id)
             full=await c.fetchrow("SELECT o.*,p.code AS product_code,p.title AS product_title,u.telegram_id,u.name,u.phone FROM orders o JOIN products p ON p.id=o.product_id JOIN users u ON u.id=o.user_id WHERE o.id=$1",order_id)
             return dict(full) if full else None
 

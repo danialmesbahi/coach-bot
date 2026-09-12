@@ -7,20 +7,21 @@ import asyncio
 from contextlib import asynccontextmanager
 
 import asyncpg
+from aiohttp import web
 from redis.asyncio import Redis
 
 from app.config import get_settings
 from app.db import repositories as repo
-from app.services import web_login, staff
+from app.services import staff
 
 
 async def main():
     settings = get_settings()
     connection = await asyncpg.connect(settings.database_url)
     redis = Redis.from_url(settings.redis_url, decode_responses=True)
+    assert await redis.ping()
     original_db = repo.db
     original_staff_db = staff.db
-    challenge = None
 
     class TemporaryDatabase:
         @asynccontextmanager
@@ -35,10 +36,10 @@ async def main():
         for table in ('users', 'products', 'orders', 'support_messages', 'staff_accounts', 'staff_invites', 'audit_logs'):
             await connection.execute(f'CREATE TEMP TABLE {table} (LIKE public.{table} INCLUDING DEFAULTS INCLUDING INDEXES) ON COMMIT DROP')
         # Test inserts never advance public sequences.
-        for table in ('staff_accounts', 'audit_logs'):
-            await connection.execute(f'CREATE TEMP SEQUENCE test_{table}_ids START 100')
+        for table in ('staff_accounts', 'audit_logs', 'support_messages'):
+            await connection.execute(f'CREATE TEMP SEQUENCE test_{table}_ids START 1000')
             await connection.execute(f"ALTER TABLE {table} ALTER COLUMN id SET DEFAULT nextval('test_{table}_ids')")
-        await connection.execute("INSERT INTO staff_accounts(id,telegram_id,username,display_name,role,status,auth_mode) VALUES(1,$1,'test_owner','Owner','platform','active','telegram')", settings.sensi_id)
+        await connection.execute("INSERT INTO staff_accounts(id,telegram_id,username,display_name,role,status,auth_mode) VALUES(1,$1,'test_owner','Owner','platform','active','password')", settings.sensi_id)
         await connection.execute('CREATE TEMP TABLE payment_attempts(authority TEXT PRIMARY KEY, order_id BIGINT NOT NULL) ON COMMIT DROP')
         await connection.execute("INSERT INTO users(id,telegram_id,name) VALUES(1,1,'Integration test')")
         await connection.execute("INSERT INTO products(id,code,title,description,price_irr) VALUES(1,'test','Test','Test',100)")
@@ -64,33 +65,77 @@ async def main():
             pass
         else:
             raise AssertionError('A settled order must not publish another payment link')
-        challenge, proof, _ = await web_login.create(redis)
-        assert not await web_login.approve(redis, challenge, -1)
-        assert await web_login.approve(redis, challenge, settings.sensi_id)
-        assert not await web_login.approve(redis, challenge, settings.sensi_id)
-        results = await asyncio.gather(*(web_login.consume(redis, f'{challenge}.{proof}') for _ in range(10)))
-        assert results.count(('approved', settings.sensi_id)) == 1
-        assert results.count(('expired', None)) == 9
+        slots = asyncio.Semaphore(2)
         owner = dict(await connection.fetchrow('SELECT * FROM staff_accounts WHERE id=1'))
-        owner['staff_id'] = owner['id']
-        created = await staff.team_change(owner, {'action':'create','role':'staff','username':'new_support','display_name':'Support','telegram_id':9000000001,'permissions':['chats.reply']})
+        owner.update(staff_id=owner['id'], version=owner['session_version'])
+        created = await staff.team_change(owner, {'action':'create','role':'staff','username':'new_support','display_name':'Support','password':'Example1!','permissions':['chats.reply']}, slots)
+        leader_result = await staff.team_change(owner, {'action':'create','role':'leader','username':'new_leader','display_name':'Leader','password':'Leader1!','permissions':[]}, slots)
+        leader = leader_result['account']
+        leader.update(staff_id=leader['id'], version=leader['session_version'])
+        for target in (owner, leader):
+            try:
+                await staff.team_change(leader, {'action':'reset_password','id':target['id'],'version':target['session_version'],'password':'Resetpass3!'}, slots)
+            except web.HTTPForbidden:
+                pass
+            else:
+                raise AssertionError('Leaders may not reset themselves or platform owners')
         assert 'chats.read' in created['account']['permissions']
-        context = await staff.login_context({'username':'new_support','password':'example password only','invite':created['invite']}, asyncio.Semaphore(1))
-        active = await staff.finish_login(context, 9000000001)
-        assert active['status'] == 'active' and staff.verify_password('example password only', active['password_hash'])
-        assert await staff.finish_login(context, 9000000001) is None
-        await staff.team_change(owner, {'action':'disable','id':active['id'],'version':active['session_version']})
-        assert (await staff.by_telegram(9000000001))['status'] == 'disabled'
-        assert await connection.fetchval("SELECT COUNT(*) FROM audit_logs WHERE actor_staff_id=1") == 2
-        print('PASS: both payment attempts resolve; settlement once; latest-message SQL; Redis approval/one-use redemption')
-        print('PASS: staff creation, permission dependencies, invitation + password activation, one-use redemption, disable and audit')
+        assert created['account']['telegram_id'] is None
+        active = await staff.authenticate({'username':'NEW_SUPPORT','password':'Example1!'}, slots)
+        assert active['status'] == 'active'
+        active.update(staff_id=active['id'], version=active['session_version'])
+        await repo.add_support_message(1, 101, direction='sensi', sender_telegram_id=active, content_text='Staff reply')
+        message = await connection.fetchrow('SELECT * FROM support_messages WHERE message_id=101')
+        assert message['sender_telegram_id'] is None and message['sender_staff_id'] == active['id']
+        assert message['sender_name'] == 'Support'
+        await repo.add_audit(active, 'test_action', 'order', 1)
+        log = await connection.fetchrow("SELECT * FROM audit_logs WHERE action='test_action'")
+        assert log['actor_staff_id'] == active['id'] and log['actor_telegram_id'] is None
+        try:
+            await staff.change_password(active, {'current_password':'wrong','password':'Newpass2!'}, slots)
+        except web.HTTPUnauthorized:
+            pass
+        else:
+            raise AssertionError('Changing a password requires the current password')
+        await staff.change_password(active, {'current_password':'Example1!','password':'Newpass2!'}, slots)
+        current = await staff.by_id(active['id'])
+        assert current['session_version'] == active['session_version'] + 1
+        assert not staff.verify_password('Example1!', current['password_hash'])
+        current.update(staff_id=current['id'], version=current['session_version'])
+        for target in (owner, current):
+            try:
+                await staff.team_change(current, {'action':'reset_password','id':target['id'],'version':target['session_version'],'password':'Resetpass3!'}, slots)
+            except web.HTTPForbidden:
+                pass
+            else:
+                raise AssertionError('Staff may not reset any account')
+        reset = await staff.team_change(leader, {'action':'reset_password','id':current['id'],'version':current['session_version'],'password':'Resetpass3!'}, slots)
+        assert reset['account']['session_version'] == current['session_version'] + 1
+        try:
+            await staff.team_change(leader, {'action':'reset_password','id':current['id'],'version':current['session_version'],'password':'Stale1!!'}, slots)
+        except web.HTTPConflict:
+            pass
+        else:
+            raise AssertionError('Stale password resets must not overwrite the new password')
+        logged_in = await staff.authenticate({'username':'new_support','password':'Resetpass3!'}, slots)
+        await staff.team_change(owner, {'action':'disable','id':logged_in['id'],'version':logged_in['session_version']}, slots)
+        disabled = await staff.by_id(logged_in['id'])
+        reset_disabled = await staff.team_change(leader, {'action':'reset_password','id':disabled['id'],'version':disabled['session_version'],'password':'Resetpass3!'}, slots)
+        assert reset_disabled['account']['status'] == 'disabled'
+        try:
+            await staff.authenticate({'username':'new_support','password':'Resetpass3!'}, slots)
+        except web.HTTPUnauthorized:
+            pass
+        else:
+            raise AssertionError('Disabled accounts cannot log in')
+        assert await connection.fetchval("SELECT COUNT(*) FROM audit_logs WHERE actor_staff_id=1") == 3
+        assert not await connection.fetchval("SELECT EXISTS(SELECT 1 FROM audit_logs WHERE metadata::text LIKE '%pass3%')")
+        print('PASS: payment idempotency; latest-message SQL; password-only creation/login/change/reset/disable; stable attribution without Telegram')
     finally:
         repo.db = original_db
         staff.db = original_staff_db
         await transaction.rollback()
         await connection.close()
-        if challenge:
-            await redis.delete(web_login.key(challenge))
         await redis.aclose()
 
 

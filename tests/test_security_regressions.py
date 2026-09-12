@@ -75,28 +75,6 @@ def test_payment_replays_and_gateway_concurrency_are_bounded(monkeypatch):
     asyncio.run(run())
 
 
-def test_login_ingress_identity_and_untrusted_header(monkeypatch):
-    async def run():
-        redis = AsyncMock()
-        redis.incr.return_value = 1
-        monkeypatch.setattr(webapp.web_login, 'create', AsyncMock(return_value=('a'*32, 'b'*43, '123456')))
-        monkeypatch.setattr(webapp.settings, 'web_trust_ingress', True)
-        for client in ('192.0.2.1', '192.0.2.2'):
-            request = make_mocked_request('POST', '/api/auth/bot/start', headers={'X-Login-Request':'1', 'X-Coach-Client-IP':client})
-            request.app['redis'] = redis
-            assert (await webapp.bot_login(request)).status == 200
-            assert f':{client}:start:' in redis.incr.await_args.args[0]
-        request = make_mocked_request('POST', '/api/auth/bot/start', headers={'X-Login-Request':'1', 'X-Forwarded-For':'192.0.2.99'})
-        request.app['redis'] = redis
-        assert (await webapp.bot_login(request)).status == 403
-        monkeypatch.setattr(webapp.settings, 'web_trust_ingress', False)
-        request = make_mocked_request('POST', '/api/auth/bot/start', headers={'X-Login-Request':'1', 'X-Coach-Client-IP':'192.0.2.99'})
-        request.app['redis'] = redis
-        assert (await webapp.bot_login(request)).status == 200
-        assert '192.0.2.99' not in redis.incr.await_args.args[0]
-    asyncio.run(run())
-
-
 def test_established_stream_stops_after_logout(monkeypatch):
     class Subscribers(set):
         def add(self, queue):
@@ -105,8 +83,8 @@ def test_established_stream_stops_after_logout(monkeypatch):
             queue.put_nowait('{"id":2}')
 
     async def run():
-        actor = {'telegram_id':webapp.settings.sensi_id, 'role':'leader', 'staff_id':1, 'version':1, 'auth_method':'telegram', 'csrf':'test'}
-        monkeypatch.setattr(webapp.staff, 'by_telegram', AsyncMock(return_value={'id':1,'telegram_id':webapp.settings.sensi_id,'username':'leader','display_name':'Leader','role':'leader','permissions':[],'status':'active','auth_mode':'telegram','session_version':1}))
+        actor = {'telegram_id':webapp.settings.sensi_id, 'role':'leader', 'staff_id':1, 'version':1, 'auth_method':'password', 'csrf':'test'}
+        monkeypatch.setattr(webapp.staff, 'by_id', AsyncMock(return_value={'id':1,'telegram_id':webapp.settings.sensi_id,'username':'leader','display_name':'Leader','role':'leader','permissions':[],'status':'active','auth_mode':'password','session_version':1}))
         redis = SimpleNamespace(get=AsyncMock(side_effect=[json.dumps(actor), None]))
         stream = SimpleNamespace(prepare=AsyncMock(), write=AsyncMock())
         monkeypatch.setattr(webapp.web, 'StreamResponse', lambda **kwargs: stream)
@@ -136,8 +114,3 @@ def test_media_buffer_rejects_oversize_before_retaining_it():
     with pytest.raises(ValueError):
         buffer.write(b'5')
     assert buffer.getvalue() == b'1234'
-
-
-@pytest.mark.parametrize('payload', [None, [], 1, {'hash':[]}, {'hash':'ف'*64, 'auth_date':1}])
-def test_malformed_login_is_rejected_without_server_error(payload):
-    assert webapp.validate_telegram_auth(payload, webapp=True) is None

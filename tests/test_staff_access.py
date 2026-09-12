@@ -9,12 +9,12 @@ from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
 from app import webapp
-from app.services import staff, web_login
+from app.services import staff
 
 
 def account():
     return dict(id=7, telegram_id=7, username='support', display_name='Support', role='staff',
-                permissions=['chats.read', 'chats.reply'], status='active', auth_mode='password_telegram', session_version=4)
+                permissions=['chats.read', 'chats.reply'], status='active', auth_mode='password', session_version=4)
 
 
 def test_delivery_does_not_send_when_another_worker_holds_order(monkeypatch):
@@ -52,31 +52,57 @@ def test_role_hierarchy_and_capability_dependencies():
 
 
 def test_password_hashes_are_salted_and_fail_closed():
-    first = staff.hash_password('correct horse battery')
-    assert first != staff.hash_password('correct horse battery')
-    assert staff.verify_password('correct horse battery', first)
-    assert not staff.verify_password('incorrect horse battery', first)
-    assert not staff.verify_password('correct horse battery', 'malformed')
+    first = staff.hash_password('Correct horse battery1!')
+    assert first != staff.hash_password('Correct horse battery1!')
+    assert staff.verify_password('Correct horse battery1!', first)
+    assert not staff.verify_password('inCorrect horse battery1!', first)
+    assert not staff.verify_password('Correct horse battery1!', 'malformed')
     with pytest.raises(ValueError):
         staff.hash_password('short')
 
 
-def test_password_accounts_cannot_bypass_password_via_telegram(monkeypatch):
-    monkeypatch.setattr(staff, 'by_telegram', AsyncMock(return_value=account()))
-    assert not asyncio.run(web_login.allowed(7, {'context': {}}))
-    assert not asyncio.run(web_login.allowed(7, {'context': {'target': 8, 'version':4}}))
-    assert not asyncio.run(web_login.allowed(7, {'context': {'target': 7, 'version':3}}))
-    assert asyncio.run(web_login.allowed(7, {'context': {'target': 7, 'version':4}}))
-    with pytest.raises(web.HTTPForbidden):
-        asyncio.run(webapp._new_session(SimpleNamespace(app={'redis':AsyncMock()}), 7))
+@pytest.mark.parametrize("password", ["short", "abcdefgh1!", "ABCDEFGH!", "Abcdefg1", "Aa1!   ", "A1!" * 44])
+def test_password_policy_rejects_weak_passwords(password):
+    with pytest.raises(ValueError):
+        staff.hash_password(password)
+
+
+def test_eight_character_password_and_bounded_hashing():
+    assert staff.verify_password("Abcdef1!", staff.hash_password("Abcdef1!"))
+    with pytest.raises(web.HTTPTooManyRequests):
+        asyncio.run(staff.password_work(asyncio.Semaphore(0), staff.hash_password, "Abcdef1!"))
+
+
+def test_cancelled_hash_keeps_its_slot_until_thread_finishes():
+    import threading
+    async def run():
+        started, release = threading.Event(), threading.Event()
+        def worker():
+            started.set()
+            release.wait(2)
+        slots = asyncio.Semaphore(1)
+        task = asyncio.create_task(staff.password_work(slots, worker))
+        assert await asyncio.to_thread(started.wait, 1)
+        try:
+            task.cancel()
+            await asyncio.sleep(0)
+            assert slots.locked()
+            with pytest.raises(web.HTTPTooManyRequests):
+                await staff.password_work(slots, lambda: None)
+        finally:
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        assert not slots.locked()
+    asyncio.run(run())
 
 
 def test_session_revocation_and_media_permission_enforced(monkeypatch):
     async def run():
         current = account()
-        monkeypatch.setattr(staff, 'by_telegram', AsyncMock(return_value=current))
+        monkeypatch.setattr(staff, 'by_id', AsyncMock(return_value=current))
         redis = AsyncMock()
-        redis.get.return_value=json.dumps({'telegram_id':7,'staff_id':7,'version':4,'csrf':'test','auth_method':'password_telegram'})
+        redis.get.return_value=json.dumps({'telegram_id':7,'staff_id':7,'version':4,'csrf':'test','auth_method':'password'})
         redis.incr.return_value=1
         request=make_mocked_request('GET','/media/orders/1/receipt',headers={'Cookie':'sensi_session=test'})
         request.app['redis']=redis

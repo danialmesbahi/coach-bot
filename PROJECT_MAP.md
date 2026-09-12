@@ -13,11 +13,11 @@ Read this first for any change. Then open only the listed route and its matching
 `entrypoint.sh` → Alembic → `app/main.py` → Redis FSM/rate limit → routers:
 
 ```text
-web-login approval router → edit router → customer router (private chats only)
+edit router → customer router (private chats only; no web-login approval)
 ```
 
 - Development: polling. Production: Telegram webhook + ZarinPal callback.
-- Persistent data: PostgreSQL. Redis: FSM, sessions, one-use login approvals and rate limits.
+- Persistent data: PostgreSQL. Redis: FSM, password-authenticated staff sessions and rate limits.
 - Web: nginx ingress `:8090` → Next.js frontend / aiohttp API. Staff use the web panel, never Telegram admin callbacks.
 
 ## Routes by intent
@@ -30,7 +30,7 @@ web-login approval router → edit router → customer router (private chats onl
 | Payment gateway/callback | `services/payment.py`, `main.py` | `handlers/user.py`, `db/repositories.py` |
 | Data/status/reporting | `db/repositories.py` | `schema.sql`, latest Alembic migration |
 | Roles, env, webhook, rate limits | `config.py`, `main.py` | `middlewares/security.py`, `docker-compose.yml` |
-| Staff accounts, invitations, permissions, collaboration | `services/staff.py`, `webapp.py` | `web/src/components/staff-panel.tsx`, `docs/STAFF_ACCESS.md`, `tests/test_staff_access.py` |
+| Staff accounts, password login/reset, permissions, collaboration | `services/staff.py`, `webapp.py` | `web/src/components/staff-panel.tsx`, `docs/STAFF_ACCESS.md`, `tests/test_password_login.py` |
 | UI labels/keyboard/callbacks | `keyboards.py` | relevant handler |
 
 ## Core flow

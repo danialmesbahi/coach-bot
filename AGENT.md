@@ -33,7 +33,7 @@ The Sensi can:
 - send and receive customer messages
 - view sales statistics
 
-The Sensi uses the web panel, including sales and the development-team share. Telegram exposes only customer flows and approval of web login.
+The Sensi uses the web panel, including sales and the development-team share. Telegram exposes only customer flows. Staff login is username/password only; recovery is through a managing superior.
 
 ### 3. Admin Team
 The admin team manages only the sales/financial side of this single Sensi.

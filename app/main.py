@@ -12,7 +12,6 @@ from app.config import get_settings
 from app.db.core import db
 from app.handlers.user import router as user_router
 from app.handlers.edit import router as edit_router
-from app.handlers.web_login import router as web_login_router
 from app.middlewares.security import RateLimitMiddleware
 from app.services.motivation import run_motivation_loop
 
@@ -27,7 +26,6 @@ async def build_dispatcher(redis):
     dp.callback_query.middleware(RateLimitMiddleware(redis))
     # Telegram can approve a web login, but exposes no management panel.
     dp['login_redis'] = redis
-    dp.include_router(web_login_router)
     dp.include_router(edit_router); dp.include_router(user_router)
     return dp
 

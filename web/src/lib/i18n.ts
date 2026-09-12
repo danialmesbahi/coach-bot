@@ -25,8 +25,8 @@ const fa = {
   send:"ارسال", uploadPlan:"تحویل فایل دوره", chooseFile:"انتخاب فایل", conversation:"گفت‌وگو", reply:"پاسخ به شاگرد",
   monthRevenue:"فروش این ماه", totalRevenue:"فروش کل", net:"سهم سنسی", loading:"در حال دریافت اطلاعات…",
   done:"انجام شد", error:"عملیات انجام نشد؛ دوباره تلاش کنید.", retry:"تلاش دوباره", filters:"فیلترها",
-  loginTitle:"مدیریت حرفه‌ای سنسی", loginText:"برای ورود امن، هویت شما با تلگرام بررسی می‌شود.",
-  devLogin:"ورود آزمایشی محلی", secureLogin:"ورود بدون رمز؛ فقط سنسی و تیم مجاز دسترسی دارند.",
+  loginTitle:"مدیریت حرفه‌ای سنسی", loginText:"با نام کاربری و رمز عبور وارد فضای تیم شو.",
+  devLogin:"ورود آزمایشی محلی", secureLogin:"فقط اعضای مجاز تیم دسترسی دارند.",
   collapseNav:"جمع‌کردن منو", expandNav:"بازکردن منو", close:"بستن", install:"نصب برنامه",
 } as const;
 
@@ -50,7 +50,7 @@ const en: Record<keyof typeof fa, string> = {
   send:"Send",uploadPlan:"Deliver course file",chooseFile:"Choose file",conversation:"Conversation",reply:"Reply to client",
   monthRevenue:"Revenue this month",totalRevenue:"All-time revenue",net:"Sensi net",loading:"Loading data…",done:"Done",
   error:"The operation failed. Please try again.",retry:"Try again",filters:"Filters",loginTitle:"Professional Sensi management",
-  loginText:"Your identity is securely verified by Telegram.",devLogin:"Local development login",secureLogin:"Passwordless; only authorized staff can enter.",
+  loginText:"Sign in with your username and password.",devLogin:"Local development login",secureLogin:"Only authorized team members can enter.",
   collapseNav:"Collapse navigation",expandNav:"Expand navigation",close:"Close",install:"Install app",
 };
 

@@ -5,7 +5,7 @@ export type SalesPeriod = "day" | "week" | "month" | "all";
 
 export interface Session {
   role: Role;
-  telegramId: number;
+  telegramId: number | null;
   csrf: string;
   staffId: number;
   displayName: string;

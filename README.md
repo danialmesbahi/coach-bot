@@ -5,8 +5,8 @@
 ## نقش‌ها
 
 - `customer`: خرید برنامه، پروفایل، سفارش‌ها و «پیام به مربی».
-- `sensi`: فقط یک Telegram ID از طریق `SENSI_ID`. مدیریت سفارش‌ها، مشاهده اطلاعات سفارش و ارسال برنامه.
-- `admin_team`: یک یا چند Telegram ID از طریق `ADMIN_TEAM_IDS` برای ورود به پنل وب. سهم تیم توسعه با `DEVELOPMENT_TEAM_PERCENT` محاسبه می‌شود و پیش‌فرض ۵۰٪ است. ربات تلگرام هیچ پنل مدیریتی ندارد.
+- پنل وب: `platform` (توسعه)، `leader` (مربی اصلی) و `staff` (همکار با دسترسی مشخص). ورود فقط نام کاربری و رمز است؛ مدیریت اعضا و بازیابی رمز توسط سطح بالاتر انجام می‌شود. راهنما: [دسترسی تیم](docs/STAFF_ACCESS.md).
+- شناسه‌های محیطی فقط برای ساخت اولیهٔ حساب‌ها هستند، نه احراز هویت وب. سهم تیم توسعه با `DEVELOPMENT_TEAM_PERCENT` محاسبه می‌شود و پیش‌فرض ۵۰٪ است. ربات تلگرام هیچ پنل مدیریتی ندارد.
 
 هیچ انتخاب یا تعویض سنسی وجود ندارد و multi-tenant نیست.
 
@@ -135,8 +135,7 @@ For production, HTTPS is required and the webhook must be reachable from Telegra
 - Edit `.env.live` for management IDs, the domain, and gateway credentials. Both Python and Docker load it after `.env`; it is excluded from Git and Docker build contexts. Database/Redis credentials remain in `.env`.
 - Set `APP_ENV=production`, `PAYMENT_MODE=zarinpal`, `WEB_DEV_LOGIN=false` in `.env.live` only after completing the configuration.
 - Set the actual `ZARINPAL_MERCHANT_ID` privately in `.env.live`, the publicly reachable HTTPS `PUBLIC_BASE_URL`, and a random `WEBHOOK_SECRET` of at least 32 characters.
-- The main login button creates a three-minute, single-use browser-bound request. Open the bot, compare the six-digit code, explicitly approve, then return to the same browser/PWA. Only `SENSI_ID` / `ADMIN_TEAM_IDS` can approve; Telegram has no management panel. This flow also works on a local/private panel while the bot uses polling. Deploy both `bot` and `web-api` together.
-- The legacy signed widget endpoint `/auth/telegram` still requires registering the panel domain in BotFather; the new bot-approval login does not depend on that widget.
+- Web login is username/password only. Initialize the seeded platform account locally, then create other accounts through Members. See [Staff access](docs/STAFF_ACCESS.md) for password policy, hierarchy, recovery and migration. Telegram and development-login endpoints are removed.
 - The Next.js entry point forwards `/payment/zarinpal/callback` and `/telegram/webhook` to `bot:8080`. In production the bot listens there in webhook mode. A private Tailscale Serve address alone is not a public webhook endpoint.
-- Rebuild/recreate `bot`, `web-api`, and `web` after activation. Old unverified/test sessions require a fresh Telegram login once test login is disabled.
-- Verify login with the actual permitted Telegram account and one real purchase/callback before opening sales. Existing demo orders are not deleted or converted into real payments automatically.
+- Rebuild/recreate `bot`, `web-api`, and `web` after activation. Old Telegram/test sessions require a fresh password login.
+- Verify staff password login and one real purchase/callback before opening sales. Existing demo orders are not deleted or converted into real payments automatically.

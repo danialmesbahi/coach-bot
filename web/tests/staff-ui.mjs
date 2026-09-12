@@ -7,6 +7,30 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const browser=await chromium.launch({headless:true,channel:process.env.BROWSER_CHANNEL||undefined});
 const errors=[];
 try {
+  for(const lang of ['fa','en']) {
+    const page=await browser.newPage({viewport:{width:390,height:844}});
+    page.on('pageerror',error=>errors.push(error.message));
+    await page.addInitScript(lang=>localStorage.setItem('sensi-lang',lang),lang);
+    let attempts=0;
+    await page.route('**/api/**',async route=>{
+      const path=new URL(route.request().url()).pathname;
+      if(path==='/api/auth/password'){
+        attempts++;
+        assert.deepEqual(route.request().postDataJSON(),{username:'example',password:'Example1!'});
+        assert.equal(route.request().headers()['x-login-request'],'1');
+      }
+      await route.fulfill({status:401,contentType:'application/json',body:'{"error":"unauthorized"}'});
+    });
+    await page.goto(process.env.TEST_BASE_URL || 'http://127.0.0.1:8090/');
+    await page.locator('input[autocomplete=username]').fill('example');
+    await page.locator('input[autocomplete=current-password]').fill('Example1!');
+    await page.getByRole('button',{name:/^ورود$|^Sign in$/}).click();
+    await page.locator('.login-card').getByRole('alert').waitFor();
+    assert.equal(attempts,1);
+    assert.equal(await page.locator('a[href*="t.me"],script[src*="telegram"]').count(),0);
+    assert.equal(await page.locator('body').evaluate(el=>el.scrollWidth<=innerWidth+1),true);
+    await page.close();
+  }
   for(const width of [390,820,1440]) for(const lang of ['fa','en']) {
     const page=await browser.newPage({viewport:{width,height:900}});
     page.on('pageerror',error=>errors.push(error.message));
@@ -34,10 +58,23 @@ try {
     assert.equal(await dialog.evaluate(el=>el.scrollWidth<=el.clientWidth+1),true,`dialog overflow ${width}/${lang}`);
     assert.equal(await page.locator('.staff-body').evaluate(el=>el.scrollWidth<=el.clientWidth+1),true,`body overflow ${width}/${lang}`);
     assert.equal(await page.locator('.staff-permissions input').count(),2);
+    const menu=page.locator('.staff-editor .select-menu');
+    await menu.getByRole('button',{name:/Account level|سطح حساب/}).click();
+    const options=menu.getByRole('listbox');
+    await options.waitFor({state:'visible'});
+    assert.equal(await options.getByRole('option').count(),3);
+    assert.equal(await dialog.evaluate(el=>el.scrollWidth<=el.clientWidth+1),true);
+    if(process.env.SAVE_SCREENSHOTS==='1'&&width===390)await page.screenshot({path:`../artifacts/staff-password-${lang}.png`});
+    await page.keyboard.press('Escape');
+    assert.equal(await dialog.isVisible(),true,'Escape closes menu, not entire dialog');
+    await page.getByRole('button',{name:/Cancel|لغو/,exact:true}).click();
+    await page.getByRole('button',{name:/Reset password|تعیین رمز جدید/,exact:true}).click();
+    assert.equal(await page.locator('.staff-editor input[type=password]').count(),1);
+    await page.getByRole('button',{name:/Cancel|لغو/,exact:true}).click();
     await page.keyboard.press('Escape');
     await dialog.waitFor({state:'hidden'});
     await page.close();
   }
   assert.deepEqual(errors,[]);
-  console.log('PASS: staff workspace, invite form, permissions and modal close at 390/820/1440 px in FA/EN (mock API)');
+  console.log('PASS: staff workspace, initial/reset password forms, custom role menu, permissions and modal close at 390/820/1440 px in FA/EN (mock API)');
 } finally { await browser.close(); }

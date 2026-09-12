@@ -12,7 +12,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from ipaddress import ip_address
 from pathlib import Path
-from urllib.parse import parse_qsl, quote
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 from weakref import WeakValueDictionary
 
@@ -27,7 +27,7 @@ from app.config import get_settings
 from app.db import repositories as repo
 from app.db.core import db
 from app.utils.photos import normalize_photos
-from app.services import web_login, staff
+from app.services import staff
 from app.utils.media import BoundedBuffer, _inspect_upload, _sniff_download
 
 
@@ -62,47 +62,9 @@ def response(data, status=200):
     return web.json_response(data, status=status, dumps=lambda value: json.dumps(value, ensure_ascii=False, default=_default))
 
 
-def validate_telegram_auth(raw: str | dict, *, webapp: bool, now: int | None = None) -> dict | None:
-    if not isinstance(raw, (str, dict)):
-        return None
-    data = dict(parse_qsl(raw, keep_blank_values=True)) if isinstance(raw, str) else dict(raw)
-    received = data.pop("hash", "")
-    if not isinstance(received, str) or not re.fullmatch(r"[0-9a-f]{64}", received) or "auth_date" not in data:
-        return None
-    check = "\n".join(f"{key}={data[key]}" for key in sorted(data))
-    if webapp:
-        secret = hmac.new(b"WebAppData", settings.bot_token.encode(), hashlib.sha256).digest()
-    else:
-        secret = hashlib.sha256(settings.bot_token.encode()).digest()
-    expected = hmac.new(secret, check.encode(), hashlib.sha256).hexdigest()
-    try:
-        fresh = abs((now or int(time.time())) - int(data["auth_date"])) <= 300
-    except (TypeError, ValueError):
-        return None
-    if not fresh or not hmac.compare_digest(received, expected):
-        return None
-    if webapp:
-        try:
-            user = json.loads(data.get("user", "{}"))
-        except (json.JSONDecodeError, TypeError):
-            return None
-    else:
-        user = data
-    if not isinstance(user, dict):
-        return None
-    try:
-        user["id"] = int(user["id"])
-    except (KeyError, TypeError, ValueError):
-        return None
-    return user
-
-
-async def _new_session(request: web.Request, telegram_id: int, *, auth_method: str = "telegram") -> str:
-    account = await staff.by_telegram(telegram_id)
-    if not account or account['status'] != 'active' or (auth_method != 'development' and account['auth_mode'] != auth_method):
-        raise web.HTTPForbidden(text="This account has no management access")
+async def _new_session(request: web.Request, account: dict) -> str:
     token = secrets.token_urlsafe(32)
-    actor = {"telegram_id": telegram_id, "staff_id": account['id'], "version": account['session_version'], "csrf": secrets.token_urlsafe(24), "auth_method": auth_method}
+    actor = {"staff_id": account['id'], "version": account['session_version'], "csrf": secrets.token_urlsafe(24), "auth_method": "password"}
     await request.app["redis"].setex(
         f"web:session:{token}", settings.web_session_hours * 3600, json.dumps(actor)
     )
@@ -150,7 +112,7 @@ async def security_headers(request: web.Request, handler):
 
 @web.middleware
 async def auth(request: web.Request, handler):
-    public = request.path in {"/", "/health", "/manifest.webmanifest", "/service-worker.js", "/api/config", "/api/auth/telegram", "/api/auth/dev", "/api/auth/bot/start", "/api/auth/bot/poll", "/auth/telegram"} or request.path.startswith("/assets/")
+    public = request.path in {"/", "/health", "/manifest.webmanifest", "/service-worker.js", "/api/config", "/api/auth/password"} or request.path.startswith("/assets/")
     if public:
         return await handler(request)
     actor = await _session_actor(request)
@@ -183,12 +145,10 @@ async def _session_actor(request: web.Request):
     if not raw:
         return None
     actor = json.loads(raw)
-    # Untagged legacy sessions may have been issued by the test-login bypass.
-    real_login_required = not settings.web_dev_login or settings.app_env.lower() == "production"
-    if real_login_required and actor.get("auth_method") not in {"telegram", "password_telegram"}:
+    if actor.get("auth_method") != "password":
         await request.app["redis"].delete(f"web:session:{token}")
         return None
-    account = await staff.by_telegram(actor["telegram_id"])
+    account = await staff.by_id(actor.get("staff_id"))
     if not account or account['status'] != 'active' or account['id'] != actor.get('staff_id') or account['session_version'] != actor.get('version'):
         await request.app["redis"].delete(f"web:session:{token}")
         return None
@@ -209,7 +169,7 @@ async def errors(request: web.Request, handler):
 
 
 async def _rate_limited(request: web.Request, scope: str, limit: int, window: int = 60) -> bool:
-    key = f"web:limit:{scope}:{request['actor']['telegram_id']}:{int(time.time()) // window}"
+    key = f"web:limit:{scope}:{request['actor']['staff_id']}:{int(time.time()) // window}"
     count = await request.app["redis"].incr(key)
     if count == 1:
         await request.app["redis"].expire(key, window + 10)
@@ -398,104 +358,73 @@ async def health(request: web.Request):
 
 
 async def config(_):
-    return response(
-        {
-            "botUsername": settings.bot_username.lstrip("@"),
-            "devLogin": settings.web_dev_login and settings.app_env.lower() != "production",
-        }
-    )
+    return response({"loginMethod": "password"})
 
 
-async def telegram_widget_login(request: web.Request):
-    user = validate_telegram_auth(dict(request.query), webapp=False)
-    if not user:
-        raise web.HTTPUnauthorized(text="Invalid Telegram login")
-    token = await _new_session(request, user["id"])
-    result = web.HTTPFound("/")
-    _set_session_cookie(result, token)
-    return result
-
-
-async def bot_login(request: web.Request):
-    # A non-simple same-origin request: cross-site forms cannot initiate/redeem a login.
+async def password_login(request: web.Request):
+    # JSON plus a non-simple header prevents cross-site login/session swapping.
     if request.headers.get("X-Login-Request") != "1" or request.headers.get("Sec-Fetch-Site") == "cross-site":
         return response({"error": "invalid_origin"}, 403)
-    redis = request.app["redis"]
-    starting = request.path.endswith("/start")
+    origin = request.headers.get("Origin")
+    proto = request.headers.get("X-Forwarded-Proto", request.scheme).split(",", 1)[0].strip()
+    host = request.headers.get("X-Forwarded-Host", request.host).split(",", 1)[0].strip()
+    if origin and origin.rstrip("/") != f"{proto}://{host}":
+        return response({"error": "invalid_origin"}, 403)
     client = request.remote or "unknown"
     if settings.web_trust_ingress:
-        # Docker publishes only ingress, which replaces this header from its socket peer.
         try:
             client = str(ip_address(request.headers.get("X-Coach-Client-IP", "")))
         except ValueError:
             return response({"error": "invalid_ingress"}, 403)
-    rate_key = f"web:login:rate:{client}:{'start' if starting else 'poll'}:{int(time.time()) // 60}"
-    count = await redis.incr(rate_key)
-    if count == 1:
-        await redis.expire(rate_key, 70)
-    if count > (20 if starting else 240):
-        result = response({"error": "rate_limited"}, 429)
-        result.headers["Retry-After"] = "60"
-        return result
-    if starting:
-        username = settings.bot_username.lstrip("@")
-        if not username:
-            return response({"error": "login_not_configured"}, 503)
-        if request.content_length and request.content_length > 4096:
-            return response({'error': 'payload_too_large'}, 413)
-        body = {}
-        if request.can_read_body:
-            payload = BoundedBuffer(4096)
-            try:
-                async for chunk in request.content.iter_chunked(1024):
-                    payload.write(chunk)
-            except ValueError:
-                return response({'error': 'payload_too_large'}, 413)
-            body = json.loads(payload.getvalue())
-        if not isinstance(body, dict):
-            return response({'error': 'invalid_payload'}, 400)
-        context = await staff.login_context(body, request.app['password_slots']) if body.get('username') else {}
-        challenge, proof, code = await web_login.create(redis, context)
-        result = response({"url": f"https://t.me/{username}?start=login_{challenge}", "code": code, "expiresIn": web_login.TTL})
-        result.set_cookie(web_login.COOKIE, f"{challenge}.{proof}", max_age=web_login.TTL,
-                          httponly=True, samesite="Strict", path="/api/auth/bot",
-                          secure=settings.app_env.lower() == "production" or request.headers.get("X-Forwarded-Proto", request.scheme) == "https")
-        return result
-    status, context = await web_login.consume(redis, request.cookies.get(web_login.COOKIE, ""), with_context=True)
-    account = await staff.finish_login(context, context['telegram_id']) if status == 'approved' else None
-    if status == 'approved' and not account:
-        status = 'denied'
-    result = response({"status": status})
-    if status == "approved":
-        token = await _new_session(request, account['telegram_id'], auth_method=account['auth_mode'])
-        _set_session_cookie(result, token)
-    if status != "pending":
-        result.del_cookie(web_login.COOKIE, path="/api/auth/bot")
+    redis = request.app["redis"]
+    async def limited(key, limit):
+        key = f"web:password:{key}:{int(time.time()) // 300}"
+        count = await redis.incr(key)
+        if count == 1:
+            await redis.expire(key, 310)
+        return count > limit
+    if await limited(f"ip:{client}", 30):
+        raise web.HTTPTooManyRequests(headers={"Retry-After": "300"})
+    if request.content_length and request.content_length > 4096:
+        return response({"error": "payload_too_large"}, 413)
+    payload = BoundedBuffer(4096)
+    try:
+        async for chunk in request.content.iter_chunked(1024):
+            payload.write(chunk)
+    except ValueError:
+        return response({"error": "payload_too_large"}, 413)
+    body = json.loads(payload.getvalue())
+    if not isinstance(body, dict):
+        return response({"error": "invalid_payload"}, 400)
+    username = body.get("username")
+    if not isinstance(username, str) or not re.fullmatch(r'[a-zA-Z0-9_.-]{3,40}', username):
+        raise web.HTTPUnauthorized(text="Invalid credentials")
+    identity = hashlib.sha256(username.lower().encode()).hexdigest()
+    if await limited(f"account:{identity}", 10):
+        raise web.HTTPTooManyRequests(headers={"Retry-After": "300"})
+    account = await staff.authenticate(body, request.app["password_slots"])
+    token = await _new_session(request, account)
+    result = response({"ok": True})
+    _set_session_cookie(result, token)
+    if proto == "https":
+        result.cookies[SESSION_COOKIE]["secure"] = True
+    previous = request.cookies.get(SESSION_COOKIE)
+    if previous:
+        await redis.delete(f"web:session:{previous}")
     return result
 
 
-async def telegram_webapp_login(request: web.Request):
-    if request.content_length and request.content_length > 16_384:
-        return response({"error": "payload_too_large"}, 413)
+async def staff_password(request):
+    if await _rate_limited(request, 'password-change', 5, 300):
+        raise web.HTTPTooManyRequests(headers={'Retry-After': '300'})
     body = await request.json()
     if not isinstance(body, dict):
-        return response({"error": "invalid_telegram_auth"}, 400)
-    user = validate_telegram_auth(body.get("initData", ""), webapp=True)
-    if not user:
-        return response({"error": "invalid_telegram_auth"}, 401)
-    token = await _new_session(request, user["id"])
-    result = response({"ok": True})
-    _set_session_cookie(result, token)
-    return result
-
-
-async def dev_login(request: web.Request):
-    if not settings.web_dev_login or settings.app_env.lower() == "production":
-        raise web.HTTPNotFound()
-    token = await _new_session(request, settings.sensi_id, auth_method="development")
-    result = response({"ok": True})
-    _set_session_cookie(result, token)
-    return result
+        return response({'error': 'invalid_payload'}, 400)
+    try:
+        await staff.change_password(request['actor'], body, request.app['password_slots'])
+    except ValueError:
+        return response({'error': 'password_policy'}, 400)
+    return await logout(request)
 
 
 async def logout(request: web.Request):
@@ -536,7 +465,7 @@ async def staff_team(request):
         if not isinstance(body, dict):
             return response({'error': 'invalid_payload'}, 400)
         try:
-            return response(await staff.team_change(actor, body))
+            return response(await staff.team_change(actor, body, request.app['password_slots']))
         except (ValueError, TypeError):
             return response({'error': 'invalid_staff_data'}, 400)
         except asyncpg.UniqueViolationError:
@@ -737,7 +666,7 @@ async def sales_gate(request: web.Request):
         return response({"error": "invalid_sales_state"}, 400)
     current = await repo.set_sales_open(is_open)
     request.app["read_cache"].clear()
-    await repo.add_audit(request["actor"]["telegram_id"], "web_sales_gate", "sales_gate", 1, {"open": current})
+    await repo.add_audit(request["actor"], "web_sales_gate", "sales_gate", 1, {"open": current})
     return response({"open": current})
 
 
@@ -1146,9 +1075,8 @@ async def build_app():
             web.get('/api/staff/team', staff_team), web.post('/api/staff/team', staff_team), web.get('/api/staff/audit', staff_audit),
             web.get('/api/collaboration/{kind:thread|order}/{target_id:\\d+}', collaboration), web.post('/api/collaboration/{kind:thread|order}/{target_id:\\d+}', collaboration),
             web.get("/", index), web.get("/health", health), web.get("/manifest.webmanifest", manifest), web.get("/service-worker.js", service_worker), web.get("/assets/{name}", asset),
-            web.get("/api/config", config), web.get("/auth/telegram", telegram_widget_login), web.post("/api/auth/telegram", telegram_webapp_login),
-            web.post("/api/auth/bot/start", bot_login), web.post("/api/auth/bot/poll", bot_login),
-            web.post("/api/auth/dev", dev_login), web.post("/api/logout", logout), web.get("/api/session", session),
+            web.get("/api/config", config), web.post("/api/auth/password", password_login),
+            web.post("/api/staff/password", staff_password), web.post("/api/logout", logout), web.get("/api/session", session),
             web.get("/api/dashboard", dashboard), web.post("/api/sales-gate", sales_gate), web.get("/api/orders", orders), web.get("/api/orders/{order_id:\\d+}", order_detail),
             web.post("/api/orders/{order_id:\\d+}/action", order_action), web.post("/api/orders/{order_id:\\d+}/plan", upload_plan),
             web.get("/api/threads", threads), web.get("/api/threads/{user_id:\\d+}", thread_detail), web.post("/api/threads/{user_id:\\d+}/reply", reply_message),

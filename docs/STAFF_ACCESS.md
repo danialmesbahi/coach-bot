@@ -16,15 +16,15 @@ There is at most one leader. Self-disable through team management is rejected. A
 
 ## Onboarding and recovery
 
-1. Existing configured owner signs in with browser-bound Telegram approval.
-2. Open the profile/team icon in the top bar → Members → Add member.
-3. Set display name, login username, numeric Telegram ID, role and permissions. Send the generated invitation and username privately to that person.
-4. Invitation opens the Staff account form. The member sets a 12–128 character password and approves the matching code with **their bound Telegram account**.
-5. New staff log in with username/password **and** Telegram approval. Telegram-only entry and legacy signed Telegram endpoints cannot bypass their password requirement.
+1. The local operator initializes the seeded development owner's username/password once, using `scripts/setup_staff_password.py --telegram-id ID --credentials-file /path/to/private.json`. The file contains `username` and `password`, belongs outside Git and Docker build contexts, and should be removed after the initial password is changed. This script refuses to overwrite an existing password.
+2. Sign in with username and password. No Telegram approval, signed widget, test login or invitation endpoint exists.
+3. Profile/team → Members → Add member: set name, username, initial password, role and permissions. No Telegram ID is required. Share credentials through a private channel.
+4. Every member can change their own password in My profile, supplying the current password.
+5. Forgotten passwords are reset by a managing superior in Members → Reset password. There is no public recovery endpoint, no self-reset through team management, and leaders cannot reset platform accounts or other leaders.
 
-Invitation secrets are hashed in PostgreSQL, single-use and expire after 24 hours. The browser URL uses a fragment and clears it after reading. Password hashes use stdlib scrypt (N=32768, r=8, p=3), random salt, following an [OWASP password-storage configuration](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html); hashing runs off the event loop with two concurrent slots per API process. Public starts are IP-rate-limited and request bodies capped at 4 KiB, including chunked bodies.
+New passwords require 8–128 characters, an ASCII uppercase letter, a digit and a non-word, non-whitespace symbol (for example !). Existing hashes remain verifiable. Password hashes use stdlib scrypt (N=32768, r=8, p=3) and a random salt. At most two hashing jobs run per API process; cancellation retains the slot until the worker finishes. Public login bodies are capped at 4 KiB, including chunked requests. Redis limits all attempts to 30 per source IP and 10 per normalized username in a five-minute window; unknown accounts use a dummy hash and the same failure response.
 
-Invite/reset revokes existing sessions and disables the old password until the new invitation is redeemed. Disable, enable, permission changes and explicit session revocation increment `session_version`. Every request checks the active database account/version; SSE checks on events and every 20-second heartbeat. No password is returned to the manager.
+Password changes/resets, disable/enable, permission changes and explicit session revocation increment `session_version`. Each request resolves the stable staff ID and version from PostgreSQL; SSE also checks on events and its 20-second heartbeat. Resetting a disabled account does not enable it. Passwords are never returned by APIs or put in audit metadata. Managers choose an initial/new password; existing passwords cannot be retrieved.
 
 ## Collaboration
 
@@ -38,7 +38,7 @@ Account operations and notes/assignment audit write in the same SQL transaction.
 
 ## Deployment and checks
 
-Back up PostgreSQL, run Alembic through `0017_staff`, then rebuild/restart **both bot and web-api**, plus Next.js. The bot approval code and API must be from the same revision. Older Redis browser sessions lack staff identity/version and require a fresh login. Never reset volumes.
+Back up PostgreSQL, run Alembic through `0018_password_login`, then rebuild/restart bot, web-api and Next.js. Stop the old bot/API while applying the migration. Previous Telegram/test sessions are rejected. Existing passwordless accounts become unconfigured; initialize the platform owner locally before handing over. Never reset volumes.
 
 Checks:
 
@@ -53,6 +53,6 @@ node --test tests/chat-viewport.test.mjs
 node tests/staff-ui.mjs
 ```
 
-`check_services.py` uses temporary SQL tables and rolls back; it verifies invitation activation/one-use, disable and audit without Telegram sends. The optional UI test requires a local Playwright runtime (`PLAYWRIGHT_MODULE`) and browser (`BROWSER_CHANNEL` if using installed Edge/Chrome). It intercepts all API requests with synthetic fixtures and checks FA/EN at 390/820/1440 px; it does **not** certify iPhone hardware or the live Telegram approval interaction.
+`check_services.py` uses temporary SQL tables and rolls back; it verifies password creation/login/change/reset, hierarchy enforcement, disable and attribution without Telegram identities without Telegram sends. The optional UI test requires a local Playwright runtime (`PLAYWRIGHT_MODULE`) and browser (`BROWSER_CHANNEL` if using installed Edge/Chrome). It intercepts all API requests with synthetic fixtures and checks FA/EN at 390/820/1440 px; it does **not** certify iPhone hardware or real-device rendering.
 
 Real deployment still requires HTTPS, working Telegram connectivity and real merchant configuration. This feature does not turn mock payments into live payments and is not a load-capacity certification.

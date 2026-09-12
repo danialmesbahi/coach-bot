@@ -1,31 +1,10 @@
 import asyncio
-import hashlib
-import hmac
 import json
 from types import SimpleNamespace
-from urllib.parse import urlencode
 
 from app.config import get_settings
 from app.db.repositories import purchaser_order_by
-from app.webapp import ASSET_FILES, SALES_PERIODS, _broadcast_update, _cached, _inspect_upload, _sales_period, _web_message, _web_order, _web_user, management_record_visible, validate_telegram_auth
-
-
-def _signed(data: dict, webapp: bool):
-    values = {key: str(value) for key, value in data.items()}
-    check = "\n".join(f"{key}={values[key]}" for key in sorted(values))
-    token = get_settings().bot_token.encode()
-    secret = hmac.new(b"WebAppData", token, hashlib.sha256).digest() if webapp else hashlib.sha256(token).digest()
-    values["hash"] = hmac.new(secret, check.encode(), hashlib.sha256).hexdigest()
-    return urlencode(values)
-
-
-def test_telegram_auth_accepts_fresh_signed_data_and_rejects_tampering():
-    now = 1_800_000_000
-    raw = _signed({"auth_date": now, "user": json.dumps({"id": 5819561965})}, True)
-    assert validate_telegram_auth(raw, webapp=True, now=now)["id"] == 5819561965
-    assert validate_telegram_auth(raw.replace("5819561965", "5819561966"), webapp=True, now=now) is None
-    widget = _signed({"auth_date": now, "id": 5819561965, "first_name": "Danial"}, False)
-    assert validate_telegram_auth(widget, webapp=False, now=now)["id"] == 5819561965
+from app.webapp import ASSET_FILES, SALES_PERIODS, _broadcast_update, _cached, _inspect_upload, _sales_period, _web_message, _web_order, _web_user, management_record_visible
 
 
 def test_web_console_has_responsive_theme_and_role_service():

@@ -17,7 +17,8 @@ def test_console_navigation_keeps_content_while_loading_and_coalesces_events():
     assert "refreshTimer.current === null" in client
     assert "Object.keys(cache.current).length >= 24" in client and "1_000" in client
     assert "realtimeTables[viewRef.current].includes(update.table)" in client
-    assert 'event.key === "ArrowDown"' in client and 'role="option"' in client
+    menu = open("web/src/components/select-menu.tsx", encoding="utf-8").read()
+    assert 'event.key === "ArrowDown"' in menu and 'role="option"' in menu
     assert 'className="page-progress"' in client and ".content-pane{min-height:" in css
     assert ".customer-card.glass{backdrop-filter:none" in css
 
