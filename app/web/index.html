@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#010102">
+  <meta name="description" content="پنل مدیریت سنسی">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Sensi">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/assets/icon-180.png">
+  <link rel="stylesheet" href="/assets/app.css?v=20260827n">
+  <title>Sensi Console</title>
+</head>
+<body>
+  <svg class="svg-defs" aria-hidden="true">
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
+    <symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/></symbol>
+    <symbol id="i-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
+    <symbol id="i-chart" viewBox="0 0 24 24"><path d="M3 3v18h18M7 16l4-5 3 3 5-7"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.66 6.34l1.41-1.41"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V3m0 0L7 8m5-5 5 5M5 14v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="i-logout" viewBox="0 0 24 24"><path d="M10 17l5-5-5-5M15 12H3M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></symbol>
+    <symbol id="i-unlock" viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 7.2-2.4"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0 2 5.5M20 4v7h-7"/></symbol>
+  </svg>
+
+  <div class="ambient" aria-hidden="true"><span></span><span></span><span></span></div>
+
+  <main id="login" class="login-shell hidden">
+    <section class="login-card glass">
+      <div class="brand-mark">S</div>
+      <p class="eyebrow">SENSI CONSOLE</p>
+      <h1 data-i18n="loginTitle">مدیریت حرفه‌ای، بدون شلوغی</h1>
+      <p class="muted" data-i18n="loginText">برای ورود امن، هویت شما با تلگرام بررسی می‌شود.</p>
+      <div id="telegram-login" class="telegram-login"></div>
+      <button id="dev-login" class="btn primary hidden" data-i18n="devLogin">ورود آزمایشی محلی</button>
+      <p class="secure-note"><svg><use href="#i-check"/></svg><span data-i18n="secureLogin">بدون رمز عبور؛ دسترسی فقط برای سنسی و ادمین</span></p>
+    </section>
+  </main>
+
+  <div id="app" class="app-shell hidden">
+    <aside class="sidebar glass">
+      <div class="sidebar-head">
+        <div class="brand"><div class="brand-mark small">S</div><div class="brand-copy"><strong>Sensi</strong><span>Console</span></div></div>
+        <button id="sidebar-toggle" class="sidebar-toggle icon-btn" aria-expanded="true"><svg><use href="#i-arrow"/></svg></button>
+      </div>
+      <nav id="nav" aria-label="Primary navigation"></nav>
+      <div class="sidebar-foot"><span class="live-dot"></span><span data-connection-label>در حال اتصال…</span></div>
+    </aside>
+
+    <section class="workspace">
+      <header class="topbar glass">
+        <div class="top-actions">
+          <button id="lang-toggle" class="icon-btn text-btn" aria-label="Change language">EN</button>
+          <button id="theme-toggle" class="icon-btn" aria-label="Toggle theme"><svg><use href="#i-moon"/></svg></button>
+          <button id="logout" class="icon-btn" aria-label="Logout"><svg><use href="#i-logout"/></svg></button>
+        </div>
+      </header>
+      <div id="content" class="content" aria-live="polite"></div>
+    </section>
+
+    <nav id="mobile-nav" class="mobile-nav glass" aria-label="Mobile navigation"></nav>
+  </div>
+
+  <div id="drawer-wrap" class="drawer-wrap hidden" role="presentation">
+    <button class="drawer-scrim" data-close aria-label="Close"></button>
+    <aside id="drawer" class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title"></aside>
+  </div>
+  <div id="toast" class="toast hidden" role="status"></div>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script src="/assets/app.js?v=20260827j" defer></script>
+</body>
+</html>

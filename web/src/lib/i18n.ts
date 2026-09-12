@@ -1,0 +1,58 @@
+import type { Lang } from "./types";
+
+const fa = {
+  dashboard:"نمای کلی", orders:"کارها", messages:"پیام‌ها", customers:"شاگردها", sales:"فروش",
+  connected:"متصل و همگام", connecting:"در حال همگام‌سازی", offline:"آفلاین", logout:"خروج امن",
+  overview:"تصویر روشن از وضعیت امروز", activeCustomers:"شاگرد فعال", usersCount:"تعداد کاربران", salesTrend:"روند فروش",
+  day:"روز", week:"هفته", month:"ماه", all:"کل", quickActions:"اقدام‌های سریع",
+  salesOpen:"فروش باز است", salesClosed:"فروش موقتاً بسته است", closeSales:"بستن فروش", openSales:"باز کردن فروش",
+  closeSalesConfirm:"فروش جدید موقتاً بسته شود؟ کاربران دیگر نمی‌توانند سفارش جدید ثبت کنند.",
+  reviewReceipts:"بررسی کارها", openMessages:"باز کردن پیام‌ها", refresh:"به‌روزرسانی",
+  priority:"اولویت‌های امروز", unreadMessages:"پیام خوانده‌نشده", receipts:"رسیدهای بررسی‌نشده",
+  newOrders:"سفارش‌های جدید", designing:"در حال طراحی", needsInfo:"منتظر اطلاعات",
+  commission:"سهم تیم توسعه", search:"جست‌وجو در همین صفحه…", searchCustomer:"نام، @شناسه، کد U یا ID را جست‌وجو کن…",
+  activityFilter:"وضعیت دوره", allStudents:"همه شاگردها", activeOnly:"دارای دوره فعال", inactiveOnly:"بدون دوره فعال",
+  courseFilter:"دوره خریداری‌شده", allCourses:"همه دوره‌ها", sortBy:"مرتب‌سازی", sortRecent:"آخرین خرید",
+  sortNameAsc:"حروف الفبا (الف تا ی)", sortNameDesc:"حروف الفبا (معکوس)", sortSpendDesc:"بیشترین خرید", sortSpendAsc:"کمترین خرید",
+  sortOrdersDesc:"بیشترین سفارش", sortOrdersAsc:"کمترین سفارش",
+  clearFilters:"پاک کردن", activeCourses:"دوره فعال", noCustomerResults:"شاگردی با این مشخصات پیدا نشد.",
+  orderCode:"کد سفارش", customer:"شاگرد", course:"دوره", status:"وضعیت", lastMessage:"آخرین پیام",
+  unread:"خوانده‌نشده", ordersCount:"سفارش‌ها", spent:"مجموع خرید", date:"تاریخ", amount:"مبلغ",
+  empty:"هنوز داده‌ای برای نمایش نیست.", previous:"قبلی", next:"بعدی", page:"صفحه", details:"جزئیات",
+  profile:"پروفایل شاگرد", phone:"شماره تماس", age:"سن", gender:"جنسیت", height:"قد", weight:"وزن",
+  goal:"هدف", history:"سابقه تمرین", notes:"توضیحات", created:"ثبت سفارش", approve:"تأیید رسید",
+  reject:"رد رسید", startDesign:"شروع طراحی", requestInfo:"درخواست اطلاعات", requestText:"دقیقاً چه اطلاعاتی لازم است؟",
+  send:"ارسال", uploadPlan:"تحویل فایل دوره", chooseFile:"انتخاب فایل", conversation:"گفت‌وگو", reply:"پاسخ به شاگرد",
+  monthRevenue:"فروش این ماه", totalRevenue:"فروش کل", net:"سهم سنسی", loading:"در حال دریافت اطلاعات…",
+  done:"انجام شد", error:"عملیات انجام نشد؛ دوباره تلاش کنید.", retry:"تلاش دوباره", filters:"فیلترها",
+  loginTitle:"مدیریت حرفه‌ای سنسی", loginText:"برای ورود امن، هویت شما با تلگرام بررسی می‌شود.",
+  devLogin:"ورود آزمایشی محلی", secureLogin:"ورود بدون رمز؛ فقط سنسی و تیم مجاز دسترسی دارند.",
+  collapseNav:"جمع‌کردن منو", expandNav:"بازکردن منو", close:"بستن", install:"نصب برنامه",
+} as const;
+
+const en: Record<keyof typeof fa, string> = {
+  dashboard:"Overview",orders:"Work queue",messages:"Messages",customers:"Clients",sales:"Revenue",
+  connected:"Connected and synced",connecting:"Syncing",offline:"Offline",logout:"Secure logout",overview:"A clear view of today",
+  activeCustomers:"Active clients",usersCount:"Total users",salesTrend:"Revenue trend",day:"Day",week:"Week",month:"Month",all:"All time",
+  quickActions:"Quick actions",salesOpen:"Sales are open",salesClosed:"Sales are paused",closeSales:"Pause sales",openSales:"Open sales",
+  closeSalesConfirm:"Pause new sales? Clients will not be able to create a new order.",reviewReceipts:"Review work",openMessages:"Open messages",
+  refresh:"Refresh",priority:"Today’s priorities",unreadMessages:"Unread messages",receipts:"Receipts to review",newOrders:"New orders",
+  designing:"In design",needsInfo:"Waiting for information",commission:"Development team share",search:"Search this page…",
+  searchCustomer:"Search name, @handle, U-code or ID…",activityFilter:"Course status",allStudents:"All clients",activeOnly:"Has active course",
+  inactiveOnly:"No active course",courseFilter:"Purchased course",allCourses:"All courses",sortBy:"Sort by",sortRecent:"Latest purchase",
+  sortNameAsc:"Name: A–Z",sortNameDesc:"Name: Z–A",sortSpendDesc:"Highest payment",sortSpendAsc:"Lowest payment",
+  sortOrdersDesc:"Most orders",sortOrdersAsc:"Fewest orders",clearFilters:"Clear",
+  activeCourses:"Active courses",noCustomerResults:"No client matches these filters.",orderCode:"Order",customer:"Client",course:"Course",
+  status:"Status",lastMessage:"Last message",unread:"Unread",ordersCount:"Orders",spent:"Total spent",date:"Date",amount:"Amount",
+  empty:"Nothing to show yet.",previous:"Previous",next:"Next",page:"Page",details:"Details",profile:"Client profile",phone:"Phone",
+  age:"Age",gender:"Gender",height:"Height",weight:"Weight",goal:"Goal",history:"Training history",notes:"Notes",created:"Created",
+  approve:"Approve receipt",reject:"Reject receipt",startDesign:"Start design",requestInfo:"Request information",requestText:"What information is needed?",
+  send:"Send",uploadPlan:"Deliver course file",chooseFile:"Choose file",conversation:"Conversation",reply:"Reply to client",
+  monthRevenue:"Revenue this month",totalRevenue:"All-time revenue",net:"Sensi net",loading:"Loading data…",done:"Done",
+  error:"The operation failed. Please try again.",retry:"Try again",filters:"Filters",loginTitle:"Professional Sensi management",
+  loginText:"Your identity is securely verified by Telegram.",devLogin:"Local development login",secureLogin:"Passwordless; only authorized staff can enter.",
+  collapseNav:"Collapse navigation",expandNav:"Expand navigation",close:"Close",install:"Install app",
+};
+
+export type CopyKey = keyof typeof fa;
+export function translator(lang: Lang) { return (key: CopyKey) => (lang === "fa" ? fa : en)[key]; }
