@@ -108,6 +108,7 @@ services:
     depends_on:
       web-api:
         condition: service_healthy
+        restart: true
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:3000/health"]
       interval: 10s
@@ -135,6 +136,7 @@ services:
     depends_on:
       web:
         condition: service_healthy
+        restart: true
     logging: *default-logging
 
 volumes:
