@@ -52,6 +52,7 @@ def test_verified_order_can_start_design(repo):
     result = asyncio.run(webapp.order_action(request))
     assert result.status == 200
     repo["update_order_status"].assert_awaited_once_with(42, "in_progress")
+    assert repo["add_audit"].await_args.args[0] is request["actor"]
     assert request.app["read_cache"] == {}
 
 
@@ -61,6 +62,7 @@ def test_information_request_is_saved_and_visible_in_conversation(repo):
     assert json.loads(result.text)["notification_sent"] is True
     repo["update_order_status"].assert_awaited_once_with(42, "needs_info")
     assert repo["add_audit"].await_args.args[-1] == {"message":"Please send your injury history."}
+    assert repo["add_support_message"].await_args.kwargs["sender_telegram_id"] is request["actor"]
     assert "ORD-000042" in repo["add_support_message"].await_args.kwargs["content_text"]
 
 

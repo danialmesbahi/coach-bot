@@ -483,8 +483,10 @@ async def staff_audit(request):
     if before and (not before.isdigit() or len(before) > 18):
         return response({'error': 'invalid_cursor'}, 400)
     async with db.acquire() as c:
-        rows = await c.fetch('''SELECT a.id,a.actor_staff_id,a.actor_name,a.action,a.target_type,a.target_id,a.created_at,a.metadata
+        rows = await c.fetch('''SELECT a.id,a.actor_staff_id,a.actor_name,s.role AS actor_role,a.action,a.target_type,a.target_id,
+                   target.display_name AS target_name,a.created_at,a.metadata
             FROM audit_logs a LEFT JOIN staff_accounts s ON s.id=a.actor_staff_id
+            LEFT JOIN staff_accounts target ON a.target_type='staff' AND target.id=a.target_id
             WHERE ($1::bigint IS NULL OR a.id<$1) AND ($2 OR s.role IS DISTINCT FROM 'platform')
             ORDER BY a.id DESC LIMIT 51''', int(before) if before else None, request['actor']['role'] == 'platform')
     return response({'items': [dict(row) for row in rows[:50]], 'next': rows[49]['id'] if len(rows) > 50 else None})
@@ -707,7 +709,8 @@ async def order_action(request: web.Request):
     info = body.get("message", "")
     if action == "needs_info" and (not isinstance(info, str) or not info.strip() or len(info.strip()) > 1000):
         return response({"error": "message_required"}, 400)
-    actor = request["actor"]["telegram_id"]
+    actor = request["actor"]
+    actor_telegram_id = actor["telegram_id"]
     current = await repo.get_order(order_id)
     if not current:
         raise web.HTTPNotFound()
@@ -715,12 +718,12 @@ async def order_action(request: web.Request):
     if action == "approve_receipt":
         if current.get("payment_method") != "card_to_card":
             return response({"error": "gateway_payment_is_automatic"}, 409)
-        changed = await repo.approve_card_payment(order_id, actor)
+        changed = await repo.approve_card_payment(order_id, actor_telegram_id)
         message = "✅ پرداخت شما تأیید شد. اطلاعات دوره شما در صف بررسی مربی قرار گرفت."
     elif action == "reject_receipt":
         if current.get("payment_method") != "card_to_card":
             return response({"error": "gateway_payment_is_automatic"}, 409)
-        changed = await repo.reject_card_payment(order_id, actor)
+        changed = await repo.reject_card_payment(order_id, actor_telegram_id)
         message = "❌ رسید پرداخت تأیید نشد. لطفاً رسید درست را دوباره در ربات ارسال کنید."
     elif action in {"in_progress", "needs_info"}:
         changed = await repo.update_order_status(order_id, action)
@@ -789,7 +792,7 @@ async def _upload_plan(request, order):
     changed = await repo.attach_plan(order_id, sent.document.file_id, filename)
     if not changed:
         return response({"error": "save_failed"}, 409)
-    await repo.add_audit(request["actor"]["telegram_id"], "web_deliver_plan", "order", order_id, {"filename": filename})
+    await repo.add_audit(request["actor"], "web_deliver_plan", "order", order_id, {"filename": filename})
     return response({"ok": True})
 
 

@@ -24,6 +24,11 @@ try {
     await page.goto(process.env.TEST_BASE_URL || 'http://127.0.0.1:8090/');
     await page.locator('input[autocomplete=username]').fill('example');
     await page.locator('input[autocomplete=current-password]').fill('Example1!');
+    const passwordControl=page.locator('.password-control');
+    await page.getByRole('button',{name:/نمایش رمز|Show password/}).click();
+    assert.equal(await passwordControl.locator('input').getAttribute('type'),'text');
+    await passwordControl.locator('input').focus();
+    assert.notEqual(await passwordControl.evaluate(el=>getComputedStyle(el).boxShadow),'none');
     await page.getByRole('button',{name:/^ورود$|^Sign in$/}).click();
     await page.locator('.login-card').getByRole('alert').waitFor();
     assert.equal(attempts,1);
@@ -41,8 +46,8 @@ try {
       const fixtures={
         '/api/session':session,
         '/api/dashboard':{role:'platform',counts:{active:0,unread:0},sales:{period:'all',orders:0,revenue:0,trend:[]},salesOpen:true,buyers:0,users:0},
-        '/api/staff/team':{items:[{id:2,telegram_id:1002,username:'test_support',display_name:'Support teammate',role:'staff',permissions:['chats.read'],status:'active',session_version:1}],total:1,permissions:{'chats.read':['خواندن پیام‌ها','Read conversations'],'chats.reply':['پاسخ به پیام‌ها','Reply to clients']},templates:{support:['chats.read','chats.reply']}},
-        '/api/staff/audit':{items:[],next:null},
+        '/api/staff/team':{items:[{id:2,telegram_id:1002,username:'test_support',display_name:'Support teammate',role:'staff',permissions:['chats.read'],status:'active',session_version:1}],total:25,permissions:{'chats.read':['خواندن پیام‌ها','Read conversations'],'chats.reply':['پاسخ به پیام‌ها','Reply to clients']},templates:{support:['chats.read','chats.reply']}},
+        '/api/staff/audit':{items:[{id:1,actor_name:'Test owner',actor_role:'platform',action:'staff_permissions',target_type:'staff',target_id:2,target_name:'Support teammate',created_at:'2026-09-13T10:00:00Z'}],next:null},
       };
       if(path==='/api/events')return route.fulfill({status:200,contentType:'text/event-stream',body:': test\n\n'});
       await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(fixtures[path]??{ok:true})});
@@ -51,18 +56,24 @@ try {
     await page.getByRole('button',{name:/Profile and team|پروفایل و مدیریت تیم/}).click();
     const dialog=page.locator('.staff-dialog');
     await dialog.waitFor({state:'visible'});
+    const dialogHeight=await dialog.evaluate(el=>el.getBoundingClientRect().height);
     await page.getByRole('button',{name:/Members|اعضای تیم/,exact:true}).click();
     await page.getByText('Support teammate',{exact:true}).waitFor();
+    assert.equal(await dialog.evaluate(el=>el.getBoundingClientRect().height),dialogHeight,'tab switch must not resize the dialog');
+    assert.equal(await page.locator('.staff-pager').count(),1);
     await page.getByRole('button',{name:/Add member|افزودن همکار/,exact:true}).click();
     await page.locator('.staff-editor').waitFor();
+    assert.equal(await page.locator('.staff-pager').count(),0,'pager must not remain active behind member editor');
     assert.equal(await dialog.evaluate(el=>el.scrollWidth<=el.clientWidth+1),true,`dialog overflow ${width}/${lang}`);
     assert.equal(await page.locator('.staff-body').evaluate(el=>el.scrollWidth<=el.clientWidth+1),true,`body overflow ${width}/${lang}`);
     assert.equal(await page.locator('.staff-permissions input').count(),2);
     const menu=page.locator('.staff-editor .select-menu');
+    const editorHeight=await page.locator('.staff-editor').evaluate(el=>el.getBoundingClientRect().height);
     await menu.getByRole('button',{name:/Account level|سطح حساب/}).click();
     const options=menu.getByRole('listbox');
     await options.waitFor({state:'visible'});
     assert.equal(await options.getByRole('option').count(),3);
+    assert.equal(await page.locator('.staff-editor').evaluate(el=>el.getBoundingClientRect().height),editorHeight,'role menu must float without shifting the form');
     assert.equal(await dialog.evaluate(el=>el.scrollWidth<=el.clientWidth+1),true);
     if(process.env.SAVE_SCREENSHOTS==='1'&&width===390)await page.screenshot({path:`../artifacts/staff-password-${lang}.png`});
     await page.keyboard.press('Escape');
@@ -71,6 +82,25 @@ try {
     await page.getByRole('button',{name:/Reset password|تعیین رمز جدید/,exact:true}).click();
     assert.equal(await page.locator('.staff-editor input[type=password]').count(),1);
     await page.getByRole('button',{name:/Cancel|لغو/,exact:true}).click();
+    await page.getByRole('button',{name:/Activity log|گزارش فعالیت/,exact:true}).click();
+    await page.getByText('Support teammate',{exact:true}).waitFor();
+    await page.getByRole('button',{name:/My profile|پروفایل من/,exact:true}).click();
+    const passwordInput=page.locator('.password-control input').last();
+    await passwordInput.focus();
+    assert.match(await passwordInput.locator('..').evaluate(el=>getComputedStyle(el).boxShadow),/rgb|rgba/,'password focus belongs to the whole control');
+    await page.getByRole('button',{name:/Sign out|خروج از حساب/,exact:true}).click();
+    await page.getByRole('alertdialog').waitFor();
+    await page.getByRole('button',{name:/Stay signed in|ماندن/,exact:true}).click();
+    assert.equal(await page.getByRole('alertdialog').count(),0);
+    if(width===390){
+      await page.locator('input[autocomplete=current-password]').fill('Current1!');
+      await page.locator('input[autocomplete=new-password]').fill('weak');
+      await page.getByRole('button',{name:/Save password|ذخیره رمز/}).click();
+      await page.locator('.field-error').waitFor();
+      await page.locator('input[autocomplete=new-password]').fill('Changed1!');
+      await page.getByRole('button',{name:/Save password|ذخیره رمز/}).click();
+      await page.locator('.staff-feedback.success').waitFor();
+    }
     await page.keyboard.press('Escape');
     await dialog.waitFor({state:'hidden'});
     await page.close();
