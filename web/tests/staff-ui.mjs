@@ -138,7 +138,7 @@ try {
     await page.getByText('Call tomorrow',{exact:true}).waitFor();
     await page.locator('.profile-dialog .drawer-mobile-back').click();
     await page.locator('.chat-shell').waitFor();
-    await page.locator('.chat-list>.collaboration-panel summary').click();
+    await page.locator('.chat-dialog .drawer-inner>header .collaboration-panel summary').click();
     await page.getByText('Call tomorrow',{exact:true}).waitFor();
     await page.close();
   }
