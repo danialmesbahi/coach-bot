@@ -133,13 +133,20 @@ try {
     await page.getByRole('button',{name:'Open conversation: Test client'}).click();
     await page.getByRole('button',{name:'Open Test client profile'}).click();
     await page.locator('.customer-profile').waitFor();
-    assert.match(await page.locator('.customer-profile .collaboration-panel summary').innerText(),/Team notes/);
-    await page.locator('.customer-profile .collaboration-panel summary').click();
+    const profileNotes=page.locator('.profile-dialog .drawer-inner>header .collaboration-panel summary');
+    assert.match(await profileNotes.getAttribute('aria-label'),/team notes/i);
+    await profileNotes.click();
+    await page.locator('.profile-dialog .collaboration-assignment').waitFor();
     await page.getByText('Call tomorrow',{exact:true}).waitFor();
     await page.locator('.profile-dialog .drawer-mobile-back').click();
     await page.locator('.chat-shell').waitFor();
-    await page.locator('.chat-dialog .drawer-inner>header .collaboration-panel summary').click();
+    const chatNotes=page.locator('.chat-dialog .drawer-inner>header .collaboration-panel summary');
+    await chatNotes.click();
     await page.getByText('Call tomorrow',{exact:true}).waitFor();
+    await chatNotes.click();
+    await page.setViewportSize({width:1440,height:900});
+    const [notesBox,closeBox]=await Promise.all([chatNotes.boundingBox(),page.locator('.chat-dialog .drawer-desktop-close').boundingBox()]);
+    assert.ok(notesBox&&closeBox&&notesBox.x+notesBox.width<=closeBox.x||closeBox&&notesBox&&closeBox.x+closeBox.width<=notesBox.x,'team notes must not overlap the drawer close button');
     await page.close();
   }
   assert.deepEqual(errors,[]);
