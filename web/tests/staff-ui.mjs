@@ -133,8 +133,12 @@ try {
     await page.getByRole('button',{name:'Open conversation: Test client'}).click();
     await page.getByRole('button',{name:'Open Test client profile'}).click();
     await page.locator('.customer-profile').waitFor();
-    assert.match(await page.locator('.customer-profile .collaboration-panel summary').innerText(),/Internal team notes/);
+    assert.match(await page.locator('.customer-profile .collaboration-panel summary').innerText(),/Team notes/);
     await page.locator('.customer-profile .collaboration-panel summary').click();
+    await page.getByText('Call tomorrow',{exact:true}).waitFor();
+    await page.locator('.profile-dialog .drawer-mobile-back').click();
+    await page.locator('.chat-shell').waitFor();
+    await page.locator('.chat-list>.collaboration-panel summary').click();
     await page.getByText('Call tomorrow',{exact:true}).waitFor();
     await page.close();
   }
