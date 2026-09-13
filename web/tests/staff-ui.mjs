@@ -38,10 +38,12 @@ try {
   }
   for(const width of [390,820,1440]) for(const lang of ['fa','en']) {
     const page=await browser.newPage({viewport:{width,height:900}});
+    let logoutAttempts=0;
     page.on('pageerror',error=>errors.push(error.message));
     await page.addInitScript(lang=>localStorage.setItem('sensi-lang',lang),lang);
     await page.route('**/api/**', async route=>{
       const path=new URL(route.request().url()).pathname;
+      if(path==='/api/logout')logoutAttempts++;
       const session={role:'platform',telegramId:1001,staffId:1,displayName:'Test owner',username:'test_owner',csrf:'fixture',permissions:['orders.read','orders.review','orders.deliver','chats.read','chats.reply','sales.read','sales.manage','customers.read','payments.review']};
       const fixtures={
         '/api/session':session,
@@ -53,6 +55,11 @@ try {
       await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(fixtures[path]??{ok:true})});
     });
     await page.goto(process.env.TEST_BASE_URL || 'http://127.0.0.1:8090/');
+    await page.getByRole('button',{name:/Secure logout|خروج امن/,exact:true}).click();
+    await page.getByRole('alertdialog').waitFor();
+    assert.equal(logoutAttempts,0,'dashboard logout must wait for explicit confirmation');
+    await page.getByRole('button',{name:/Stay signed in|ماندن/,exact:true}).click();
+    assert.equal(logoutAttempts,0);
     await page.getByRole('button',{name:/Profile and team|پروفایل و مدیریت تیم/}).click();
     const dialog=page.locator('.staff-dialog');
     await dialog.waitFor({state:'visible'});
@@ -105,6 +112,32 @@ try {
     await dialog.waitFor({state:'hidden'});
     await page.close();
   }
+  {
+    const page=await browser.newPage({viewport:{width:390,height:844}});
+    page.on('pageerror',error=>errors.push(error.message));
+    await page.addInitScript(()=>localStorage.setItem('sensi-lang','en'));
+    await page.route('**/api/**',async route=>{
+      const path=new URL(route.request().url()).pathname;
+      const session={role:'platform',telegramId:1001,staffId:1,displayName:'Test owner',username:'test_owner',csrf:'fixture',permissions:['customers.read','chats.read','chats.reply']};
+      const fixtures={
+        '/api/session':session,
+        '/api/threads':{items:[{user_id:9,name:'Test client',username:'client',message_count:1,unread_count:0,last_content_text:'Hello'}],total:1,page:1,pageSize:25,counts:{all:1,unread_threads:0,unread_messages:0}},
+        '/api/threads/9':{user:{id:9,telegram_id:9009,name:'Test client',username:'client'},items:[{id:1,direction:'customer',content_text:'Hello',content_type:'text',created_at:'2026-09-13T10:00:00Z'}]},
+        '/api/customers/9':{user:{id:9,telegram_id:9009,name:'Test client',username:'client',created_at:'2026-09-13T10:00:00Z',photo_count:0},orders:[],history:[],messages:[]},
+        '/api/collaboration/thread/9':{assignment:{staff_id:null,version:1},notes:[{id:1,author_name:'Support teammate',body:'Call tomorrow',created_at:'2026-09-13T10:00:00Z'}],members:[]},
+      };
+      if(path==='/api/events')return route.fulfill({status:200,contentType:'text/event-stream',body:': test\n\n'});
+      await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(fixtures[path]??{ok:true})});
+    });
+    await page.goto(`${process.env.TEST_BASE_URL || 'http://127.0.0.1:8090'}/messages`);
+    await page.getByRole('button',{name:'Open conversation: Test client'}).click();
+    await page.getByRole('button',{name:'Open Test client profile'}).click();
+    await page.locator('.customer-profile').waitFor();
+    assert.match(await page.locator('.customer-profile .collaboration-panel summary').innerText(),/Internal team notes/);
+    await page.locator('.customer-profile .collaboration-panel summary').click();
+    await page.getByText('Call tomorrow',{exact:true}).waitFor();
+    await page.close();
+  }
   assert.deepEqual(errors,[]);
-  console.log('PASS: staff workspace, initial/reset password forms, custom role menu, permissions and modal close at 390/820/1440 px in FA/EN (mock API)');
+  console.log('PASS: staff workspace, confirmed logout, chat-to-profile navigation and shared notes at 390/820/1440 px in FA/EN (mock API)');
 } finally { await browser.close(); }

@@ -496,23 +496,30 @@ async def collaboration(request):
     actor = request['actor']
     kind, target_id = request.match_info['kind'], int(request.match_info['target_id'])
     permission = 'chats.read' if kind == 'thread' else 'orders.read'
-    staff.require(actor, permission)
+    if kind == 'thread' and not (staff.can(actor, permission) or staff.can(actor, 'customers.read')):
+        raise web.HTTPForbidden(text='Permission denied')
+    if kind == 'order':
+        staff.require(actor, permission)
     table = 'users' if kind == 'thread' else 'orders'
     async with db.acquire() as c, c.transaction():
         if not await c.fetchval(f'SELECT id FROM {table} WHERE id=$1', target_id):
             raise web.HTTPNotFound()
         if request.method == 'POST':
-            staff.require(actor, 'chats.reply' if kind == 'thread' else 'orders.review')
             body = await request.json()
             if not isinstance(body, dict):
                 return response({'error': 'invalid_payload'}, 400)
             if body.get('action') == 'note':
+                if kind == 'thread' and not (staff.can(actor, 'chats.reply') or staff.can(actor, 'customers.read')):
+                    raise web.HTTPForbidden(text='Permission denied')
+                if kind == 'order':
+                    staff.require(actor, 'orders.review')
                 text = body.get('text')
                 if not isinstance(text, str) or not 1 <= len(text.strip()) <= 2000:
                     return response({'error': 'invalid_note'}, 400)
                 await c.execute('INSERT INTO staff_notes(target_type,target_id,staff_id,author_name,body) VALUES($1,$2,$3,$4,$5)', kind, target_id, actor['staff_id'], actor['display_name'], text.strip())
                 await staff.audit(c, actor, 'internal_note', kind, target_id)
             elif body.get('action') == 'assign':
+                staff.require(actor, 'chats.reply' if kind == 'thread' else 'orders.review')
                 assignee = body.get('staff_id')
                 if assignee is not None:
                     if type(assignee) is not int:

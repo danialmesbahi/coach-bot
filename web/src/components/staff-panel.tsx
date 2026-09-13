@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { FormEvent, ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
 import { Activity, ArrowLeft, ArrowRight, Check, LoaderCircle, LogOut, ShieldCheck, TriangleAlert, UsersRound, X } from "lucide-react";
 import { api, ApiError } from "@/lib/api";
 import { SelectMenu } from "@/components/select-menu";
@@ -15,6 +15,14 @@ type AuditItem = {id:number;actor_name:string|null;actor_role:string|null;action
 type Audit = { items:AuditItem[]; next:number|null };
 type Notice = {kind:"success"|"error";text:string};
 
+export function LogoutButton({session,lang,className="button danger staff-logout",children}:{session:Session;lang:Lang;className?:string;children?:ReactNode}) {
+  const dialog=useRef<HTMLDialogElement>(null),titleId=useId(),descriptionId=useId();
+  const [busy,setBusy]=useState(false),[error,setError]=useState(false);
+  const fa=lang==="fa";
+  const logout=async()=>{if(busy)return;setBusy(true);setError(false);try{await api("/api/logout",session.csrf,{method:"POST"});location.reload();}catch{setError(true);setBusy(false);}};
+  return <><button type="button" className={className} onClick={()=>{setError(false);dialog.current?.showModal();}}>{children??<><LogOut/>{fa?"خروج از حساب":"Sign out"}</>}</button><dialog ref={dialog} role="alertdialog" aria-labelledby={titleId} aria-describedby={descriptionId} className="staff-confirm" onClose={event=>event.stopPropagation()} onClick={event=>{event.stopPropagation();if(event.target===dialog.current)dialog.current.close();}}><i><LogOut/></i><h3 id={titleId}>{fa?"از حساب خارج می‌شوی؟":"Sign out of this account?"}</h3><p id={descriptionId}>{fa?"برای ورود دوباره به نام کاربری و رمز عبورت نیاز داری.":"You will need your username and password to sign in again."}</p>{error&&<p className="staff-confirm-error" role="alert">{fa?"خروج انجام نشد؛ اتصال را بررسی و دوباره تلاش کن.":"Could not sign out. Check your connection and try again."}</p>}<div><button type="button" className="button secondary" autoFocus disabled={busy} onClick={()=>dialog.current?.close()}>{fa?"ماندن":"Stay signed in"}</button><button type="button" className="button danger" disabled={busy} onClick={()=>void logout()}>{busy?<LoaderCircle className="spin"/>:<LogOut/>}{fa?"خروج":"Sign out"}</button></div></dialog></>;
+}
+
 export function StaffPanel({session,lang,onClose}:{session:Session;lang:Lang;onClose:()=>void}) {
   const dialog=useRef<HTMLDialogElement>(null);
   const fa=lang==="fa",manager=session.role!=="staff";
@@ -25,7 +33,6 @@ export function StaffPanel({session,lang,onClose}:{session:Session;lang:Lang;onC
   const [name,setName]=useState(session.displayName);
   const [currentPassword,setCurrentPassword]=useState(""),[ownPassword,setOwnPassword]=useState("");
   const [currentPasswordError,setCurrentPasswordError]=useState(""),[ownPasswordError,setOwnPasswordError]=useState(""),[draftPasswordError,setDraftPasswordError]=useState("");
-  const [logoutOpen,setLogoutOpen]=useState(false);
   const [editing,setEditing]=useState<Account|null>(null),[creating,setCreating]=useState(false),[resetting,setResetting]=useState<Account|null>(null);
   const [draft,setDraft]=useState({display_name:"",username:"",password:"",role:"staff",permissions:[] as string[]});
   const roleName=(role:string)=>({platform:fa?"تیم توسعه":"Platform",leader:fa?"مربی اصلی":"Leader",staff:fa?"همکار":"Staff"}[role]??role);
@@ -93,8 +100,7 @@ export function StaffPanel({session,lang,onClose}:{session:Session;lang:Lang;onC
     if(nextError||currentError)return;
     void run("/api/staff/password",{current_password:currentPassword,password:ownPassword});
   };
-  const logout=async()=>{if(busy)return;setBusy(true);setFeedback(null);try{await api("/api/logout",session.csrf,{method:"POST"});location.reload();}catch{setFeedback({kind:"error",text:fa?"خروج انجام نشد؛ اتصال را بررسی و دوباره تلاش کن.":"Could not sign out. Check your connection and try again."});setLogoutOpen(false);setBusy(false);}};
-  return <dialog ref={dialog} className="staff-dialog" onCancel={event=>{if(logoutOpen){event.preventDefault();setLogoutOpen(false);}}} onClose={onClose} onClick={event=>{if(event.target===dialog.current)dialog.current?.close();}} dir={fa?"rtl":"ltr"} aria-label={fa?"فضای تیم":"Team workspace"}>
+  return <dialog ref={dialog} className="staff-dialog" onClose={onClose} onClick={event=>{if(event.target===dialog.current)dialog.current?.close();}} dir={fa?"rtl":"ltr"} aria-label={fa?"فضای تیم":"Team workspace"}>
     <header className="staff-heading"><div><ShieldCheck/><div><small>{roleName(session.role)}</small><h2>{fa?"فضای تیم":"Team workspace"}</h2></div></div><button className="icon-button" onClick={()=>dialog.current?.close()} aria-label={fa?"بستن":"Close"}><X/></button></header>
     <nav className="staff-tabs" aria-label={fa?"مدیریت تیم":"Team management"}>
       {(["profile",...(manager?["team","audit"]:[])] as typeof tab[]).map(value=><button key={value} aria-pressed={tab===value} onClick={()=>{setTab(value);setFeedback(null);closeEditor();setOwnPassword("");setCurrentPassword("");setOwnPasswordError("");setCurrentPasswordError("");}}>{({profile:fa?"پروفایل من":"My profile",team:fa?"اعضای تیم":"Members",audit:fa?"گزارش فعالیت":"Activity log"})[value]}</button>)}
@@ -115,7 +121,7 @@ export function StaffPanel({session,lang,onClose}:{session:Session;lang:Lang;onC
           <p>{fa?"پس از تغییر رمز، از همه دستگاه‌ها خارج می‌شوی. بازیابی رمز فراموش‌شده فقط توسط مدیر بالاتر انجام می‌شود.":"Changing your password signs you out on every device. Forgotten passwords can only be reset by your supervising manager."}</p>
           <button className="button primary" disabled={busy}>{fa?"ذخیره رمز و ورود مجدد":"Save password & sign in again"}</button>
         </form>
-        <button type="button" className="button danger staff-logout" onClick={()=>setLogoutOpen(true)}><LogOut/>{fa?"خروج از حساب":"Sign out"}</button>
+        <LogoutButton session={session} lang={lang}/>
       </div>}
       {tab==="team"&&<>
         <div className="staff-section-title"><h3><UsersRound/>{team?.total??0} {fa?"عضو":"members"}</h3>{!(creating||editing||resetting)&&<button className="button primary" onClick={()=>{closeEditor();setCreating(true);setDraft({display_name:"",username:"",password:"",role:"staff",permissions:[]});}}>{fa?"افزودن همکار":"Add member"}</button>}</div>
@@ -151,17 +157,16 @@ export function StaffPanel({session,lang,onClose}:{session:Session;lang:Lang;onC
       </>}
       {tab==="audit"&&<section className="staff-audit-section"><header><div><Activity/><div><h3>{fa?"ردپای فعالیت تیم":"Team activity trail"}</h3><p>{fa?"هر تغییر مهم همراه با نام انجام‌دهنده و زمان دقیق ثبت می‌شود؛ رمزها هرگز ذخیره نمی‌شوند.":"Every important change records who did it and when. Passwords are never stored."}</p></div></div><span>{fa?`${audit?.items.length??0} رویداد`:`${audit?.items.length??0} events`}</span></header><ol className="staff-audit">{audit?.items.map(item=><li key={item.id}><i aria-hidden="true"><Activity/></i><div><header><strong>{item.actor_name??(fa?"سیستم":"System")}</strong><span>{item.actor_role?roleName(item.actor_role):fa?"رویداد سیستمی":"System event"}</span></header><p>{actionName(item.action)}</p><small>{targetName(item)}</small></div><time>{new Intl.DateTimeFormat(fa?"fa-IR":"en-GB",{dateStyle:"medium",timeStyle:"short"}).format(new Date(item.created_at))}</time></li>)}</ol>{audit&&!audit.items.length&&<p className="staff-audit-empty">{fa?"هنوز فعالیتی برای نمایش وجود ندارد.":"No activity to show yet."}</p>}<div className="staff-audit-pager"><button onClick={()=>setCursor(null)} disabled={!cursor}>{fa?"جدیدترین‌ها":"Latest"}</button><button disabled={!audit?.next} onClick={()=>setCursor(audit?.next??null)}>{fa?"رویدادهای قدیمی‌تر":"Older events"}</button></div></section>}
     </div>
-    {logoutOpen&&<div className="staff-confirm-backdrop" onClick={()=>setLogoutOpen(false)}><section role="alertdialog" aria-modal="true" aria-labelledby="logout-title" aria-describedby="logout-description" className="staff-confirm" onClick={event=>event.stopPropagation()}><i><LogOut/></i><h3 id="logout-title">{fa?"از حساب خارج می‌شوی؟":"Sign out of this account?"}</h3><p id="logout-description">{fa?"برای ورود دوباره به نام کاربری و رمز عبورت نیاز داری.":"You will need your username and password to sign in again."}</p><div><button type="button" className="button secondary" autoFocus onClick={()=>setLogoutOpen(false)}>{fa?"ماندن":"Stay signed in"}</button><button type="button" className="button danger" disabled={busy} onClick={()=>void logout()}>{busy?<LoaderCircle className="spin"/>:<LogOut/>}{fa?"خروج":"Sign out"}</button></div></section></div>}
   </dialog>;
 }
 
 type CollaborationData={assignment:{staff_id:number|null;version:number;display_name?:string};notes:Array<{id:number;author_name:string;body:string;created_at:string}>;members:Array<{id:number;display_name:string}>};
-export function CollaborationPanel({kind,id,session,lang,version}:{kind:"thread"|"order";id:number;session:Session;lang:Lang;version:number}) {
+export function CollaborationPanel({kind,id,session,lang,version,notesOnly=false}:{kind:"thread"|"order";id:number;session:Session;lang:Lang;version:number;notesOnly?:boolean}) {
   const [data,setData]=useState<CollaborationData>(),[note,setNote]=useState(""),[busy,setBusy]=useState(false),[error,setError]=useState(false);
   const path=`/api/collaboration/${kind}/${id}`,fa=lang==="fa";
-  const editable=can(session,kind==="thread"?"chats.reply":"orders.review");
+  const editable=can(session,notesOnly?"customers.read":kind==="thread"?"chats.reply":"orders.review");
   useEffect(()=>{const controller=new AbortController();void api<CollaborationData>(path,session.csrf,{signal:controller.signal}).then(setData).catch(()=>{if(!controller.signal.aborted)setError(true);});return()=>controller.abort();},[path,session.csrf,version]);
   const change=async(body:unknown)=>{if(busy)return;setBusy(true);setError(false);try{setData(await api<CollaborationData>(path,session.csrf,{method:"POST",body:JSON.stringify(body)}));setNote("");}catch{setError(true);}finally{setBusy(false);}};
-  return <details className="collaboration-panel"><summary>{fa?"همکاری تیم":"Team handoff"}<span>{data?.assignment.display_name??(fa?"بدون مسئول":"Unassigned")}</span></summary><div>{error&&<p role="alert">{fa?"ذخیره نشد؛ ممکن است همکار دیگری مسئولیت را گرفته باشد. صفحه را دوباره باز کن.":"Could not save; another teammate may have claimed this task. Reopen to refresh."}</p>}{editable&&data&&<div className="staff-actions">{session.role!=="staff"?<SelectMenu label={fa?"مسئول":"Assignee"} value={String(data.assignment.staff_id??"")} disabled={busy} onChange={value=>void change({action:"assign",staff_id:value?Number(value):null,version:data.assignment.version})} options={[["",fa?"بدون مسئول":"Unassigned"],...data.members.map(member=>[String(member.id),member.display_name] as [string,string])]}/>:<button disabled={busy||Boolean(data.assignment.staff_id&&data.assignment.staff_id!==session.staffId)} onClick={()=>void change({action:"assign",staff_id:data.assignment.staff_id===session.staffId?null:session.staffId,version:data.assignment.version})}>{data.assignment.staff_id===session.staffId?(fa?"آزاد کردن":"Release"):(fa?"من انجام می‌دهم":"Assign to me")}</button>}</div>}
+  return <details className="collaboration-panel"><summary>{notesOnly?(fa?"یادداشت داخلی تیم":"Internal team notes"):(fa?"همکاری تیم":"Team handoff")}<span>{notesOnly?data?.notes.length??0:data?.assignment.display_name??(fa?"بدون مسئول":"Unassigned")}</span></summary><div>{error&&<p role="alert">{fa?"ذخیره نشد؛ ممکن است همکار دیگری مسئولیت را گرفته باشد. صفحه را دوباره باز کن.":"Could not save; another teammate may have claimed this task. Reopen to refresh."}</p>}{editable&&data&&!notesOnly&&<div className="staff-actions">{session.role!=="staff"?<SelectMenu label={fa?"مسئول":"Assignee"} value={String(data.assignment.staff_id??"")} disabled={busy} onChange={value=>void change({action:"assign",staff_id:value?Number(value):null,version:data.assignment.version})} options={[["",fa?"بدون مسئول":"Unassigned"],...data.members.map(member=>[String(member.id),member.display_name] as [string,string])]}/>:<button disabled={busy||Boolean(data.assignment.staff_id&&data.assignment.staff_id!==session.staffId)} onClick={()=>void change({action:"assign",staff_id:data.assignment.staff_id===session.staffId?null:session.staffId,version:data.assignment.version})}>{data.assignment.staff_id===session.staffId?(fa?"آزاد کردن":"Release"):(fa?"من انجام می‌دهم":"Assign to me")}</button>}</div>}
   {editable&&<form onSubmit={e=>{e.preventDefault();void change({action:"note",text:note});}}><label>{fa?"یادداشت داخلی · برای شاگرد ارسال نمی‌شود":"Internal note · never sent to the client"}<textarea value={note} maxLength={2000} onChange={e=>setNote(e.target.value)}/></label><button disabled={busy||!note.trim()}>{fa?"ثبت یادداشت":"Add note"}</button></form>}{data?.notes.map(item=><article key={item.id}><strong>{item.author_name}</strong><p>{item.body}</p></article>)}</div></details>;
 }

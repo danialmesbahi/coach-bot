@@ -120,3 +120,40 @@ def test_all_authenticated_handlers_have_explicit_policy():
     assert staff.ROUTE_PERMISSIONS['upload_plan'] == 'orders.deliver'
     assert staff.ROUTE_PERMISSIONS['staff_team'] == 'team'
     assert 'unknown_handler' not in staff.ROUTE_PERMISSIONS
+
+
+def test_customer_reader_can_leave_profile_note_but_cannot_claim_chat(monkeypatch):
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def transaction():
+        yield
+
+    connection = SimpleNamespace(
+        transaction=transaction,
+        fetchval=AsyncMock(return_value=9),
+        fetchrow=AsyncMock(return_value=None),
+        fetch=AsyncMock(return_value=[]),
+        execute=AsyncMock(),
+    )
+
+    @asynccontextmanager
+    async def acquire():
+        yield connection
+
+    class Request(dict):
+        method = 'POST'
+        match_info = {'kind': 'thread', 'target_id': '9'}
+
+        def __init__(self, body):
+            super().__init__(actor=dict(role='staff', staff_id=4, display_name='Designer', permissions=['customers.read']))
+            self.body = body
+
+        async def json(self):
+            return self.body
+
+    monkeypatch.setattr(webapp.db, 'acquire', acquire)
+    assert asyncio.run(webapp.collaboration(Request({'action': 'note', 'text': 'Check posture'}))).status == 200
+    assert any('INSERT INTO staff_notes' in call.args[0] for call in connection.execute.await_args_list)
+    with pytest.raises(web.HTTPForbidden):
+        asyncio.run(webapp.collaboration(Request({'action': 'assign', 'staff_id': 4, 'version': 1})))
