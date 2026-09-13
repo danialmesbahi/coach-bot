@@ -121,10 +121,12 @@ try {
       const session={role:'platform',telegramId:1001,staffId:1,displayName:'Test owner',username:'test_owner',csrf:'fixture',permissions:['customers.read','chats.read','chats.reply']};
       const fixtures={
         '/api/session':session,
-        '/api/threads':{items:[{user_id:9,name:'Test client',username:'client',message_count:1,unread_count:0,last_content_text:'Hello'}],total:1,page:1,pageSize:25,counts:{all:1,unread_threads:0,unread_messages:0}},
+        '/api/threads':{items:[{user_id:9,name:'Test client',username:'client',message_count:1,unread_count:0,last_content_text:'Hello'}],total:1,page:1,pageSize:25,counts:{all:1,unread_threads:0,unread_messages:0,assigned:1}},
+        '/api/followups':{items:[{target_type:'customer',target_id:9,user_id:9,name:'Test client',username:'client',note_body:'Call tomorrow',note_author:'Support teammate',updated_at:'2026-09-13T10:00:00Z'}],total:1,page:1,pageSize:20,counts:{all:1,unread_threads:0,unread_messages:0,assigned:1}},
         '/api/threads/9':{user:{id:9,telegram_id:9009,name:'Test client',username:'client'},items:[{id:1,direction:'customer',content_text:'Hello',content_type:'text',created_at:'2026-09-13T10:00:00Z'}]},
         '/api/customers/9':{user:{id:9,telegram_id:9009,name:'Test client',username:'client',created_at:'2026-09-13T10:00:00Z',photo_count:0},orders:[],history:[],messages:[]},
         '/api/collaboration/thread/9':{assignment:{staff_id:null,version:1},notes:[{id:1,author_name:'Support teammate',body:'Call tomorrow',created_at:'2026-09-13T10:00:00Z'}],members:[]},
+        '/api/collaboration/customer/9':{assignment:{staff_id:1,version:1},notes:[{id:1,author_name:'Support teammate',body:'Call tomorrow',created_at:'2026-09-13T10:00:00Z'}],members:[]},
       };
       if(path==='/api/events')return route.fulfill({status:200,contentType:'text/event-stream',body:': test\n\n'});
       await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(fixtures[path]??{ok:true})});
@@ -133,20 +135,23 @@ try {
     await page.getByRole('button',{name:'Open conversation: Test client'}).click();
     await page.getByRole('button',{name:'Open Test client profile'}).click();
     await page.locator('.customer-profile').waitFor();
-    const profileNotes=page.locator('.profile-dialog .drawer-inner>header .collaboration-panel summary');
+    const profileNotes=page.locator('.customer-profile .collaboration-panel summary');
     assert.match(await profileNotes.getAttribute('aria-label'),/team notes/i);
     await profileNotes.click();
     await page.locator('.profile-dialog .collaboration-assignment').waitFor();
     await page.getByText('Call tomorrow',{exact:true}).waitFor();
     await page.locator('.profile-dialog .drawer-mobile-back').click();
     await page.locator('.chat-shell').waitFor();
-    const chatNotes=page.locator('.chat-dialog .drawer-inner>header .collaboration-panel summary');
+    const chatNotes=page.locator('.chat-notes-dock .collaboration-panel summary');
     await chatNotes.click();
     await page.getByText('Call tomorrow',{exact:true}).waitFor();
     await chatNotes.click();
     await page.setViewportSize({width:1440,height:900});
-    const [notesBox,closeBox]=await Promise.all([chatNotes.boundingBox(),page.locator('.chat-dialog .drawer-desktop-close').boundingBox()]);
-    assert.ok(notesBox&&closeBox&&notesBox.x+notesBox.width<=closeBox.x||closeBox&&notesBox&&closeBox.x+closeBox.width<=notesBox.x,'team notes must not overlap the drawer close button');
+    const [notesBox,headerBox]=await Promise.all([chatNotes.boundingBox(),page.locator('.chat-dialog .drawer-inner>header').boundingBox()]);
+    assert.ok(notesBox&&headerBox&&notesBox.y>=headerBox.y+headerBox.height,'team notes must stay outside the drawer header controls');
+    await page.locator('.chat-dialog').evaluate(el=>el.close());
+    await page.getByRole('button',{name:'My follow-ups'}).click();
+    await page.getByRole('button',{name:'Client profile: Test client'}).waitFor();
     await page.close();
   }
   assert.deepEqual(errors,[]);

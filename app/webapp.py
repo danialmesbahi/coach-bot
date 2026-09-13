@@ -495,12 +495,9 @@ async def staff_audit(request):
 async def collaboration(request):
     actor = request['actor']
     kind, target_id = request.match_info['kind'], int(request.match_info['target_id'])
-    permission = 'chats.read' if kind == 'thread' else 'orders.read'
-    if kind == 'thread' and not (staff.can(actor, permission) or staff.can(actor, 'customers.read')):
-        raise web.HTTPForbidden(text='Permission denied')
-    if kind == 'order':
-        staff.require(actor, permission)
-    table = 'users' if kind == 'thread' else 'orders'
+    permission = {'thread':'chats.read','customer':'customers.read','order':'orders.read'}[kind]
+    staff.require(actor, permission)
+    table = 'users' if kind in {'thread','customer'} else 'orders'
     async with db.acquire() as c, c.transaction():
         if not await c.fetchval(f'SELECT id FROM {table} WHERE id=$1', target_id):
             raise web.HTTPNotFound()
@@ -509,17 +506,14 @@ async def collaboration(request):
             if not isinstance(body, dict):
                 return response({'error': 'invalid_payload'}, 400)
             if body.get('action') == 'note':
-                if kind == 'thread' and not (staff.can(actor, 'chats.reply') or staff.can(actor, 'customers.read')):
-                    raise web.HTTPForbidden(text='Permission denied')
-                if kind == 'order':
-                    staff.require(actor, 'orders.review')
+                staff.require(actor, {'thread':'chats.reply','customer':'customers.read','order':'orders.review'}[kind])
                 text = body.get('text')
                 if not isinstance(text, str) or not 1 <= len(text.strip()) <= 2000:
                     return response({'error': 'invalid_note'}, 400)
                 await c.execute('INSERT INTO staff_notes(target_type,target_id,staff_id,author_name,body) VALUES($1,$2,$3,$4,$5)', kind, target_id, actor['staff_id'], actor['display_name'], text.strip())
                 await staff.audit(c, actor, 'internal_note', kind, target_id)
             elif body.get('action') == 'assign':
-                staff.require(actor, 'chats.reply' if kind == 'thread' else 'orders.review')
+                staff.require(actor, {'thread':'chats.reply','customer':'customers.read','order':'orders.review'}[kind])
                 assignee = body.get('staff_id')
                 if assignee is not None:
                     if type(assignee) is not int:
@@ -552,13 +546,15 @@ def _broadcast_update(app: web.Application, payload: str):
     if not isinstance(update, dict) or len(payload) > 4096:
         return
     table = update.get("table")
-    if table in {"users", "orders", "support_messages", "sales_gate"}:
+    if table in {"users", "orders", "support_messages", "sales_gate", "staff_assignments"}:
         for key in tuple(app["read_cache"]):
             if key.startswith("dashboard:"):
                 app["read_cache"].pop(key, None)
             elif table in {"users", "orders"} and key.startswith("orders:"):
                 app["read_cache"].pop(key, None)
             elif table in {"users", "support_messages"} and key.startswith("threads:"):
+                app["read_cache"].pop(key, None)
+            elif table == "staff_assignments" and key.startswith("threads:"):
                 app["read_cache"].pop(key, None)
     if table == "products":
         app["read_cache"].pop("products", None)
@@ -659,8 +655,12 @@ async def dashboard(request: web.Request):
     if not staff.can(request['actor'], 'sales.read'):
         data['sales'] = {'period': period, 'revenue': 0, 'orders': 0, 'trend': []}
     data['counts'] = dict(data['counts'])
+    kinds = [kind for kind, permission in {'thread':'chats.read','customer':'customers.read','order':'orders.read'}.items() if staff.can(request['actor'], permission)]
+    data['counts']['assigned'] = await repo.staff_assignment_count(request['actor']['staff_id'], kinds)
     if not staff.can(request['actor'], 'chats.read'):
         data['counts']['unread'] = 0
+    if not staff.can(request['actor'], 'customers.read'):
+        data['buyers'] = data['users'] = data['counts']['active'] = 0
     if not staff.can(request['actor'], 'orders.read'):
         for key in ('actionable', 'receipts', 'new_orders', 'designing', 'needs_info'):
             data['counts'][key] = 0
@@ -808,9 +808,18 @@ async def threads(request: web.Request):
     page = _safe_page(request)
     query, unread = request.query.get("q", ""), request.query.get("unread") == "1"
     async def load():
-        (rows, total), counts = await asyncio.gather(repo.support_threads(page, 20, query, unread), repo.support_thread_counts())
+        kinds = [kind for kind, permission in {'thread':'chats.read','customer':'customers.read','order':'orders.read'}.items() if staff.can(request['actor'], permission)]
+        (rows, total), counts = await asyncio.gather(repo.support_threads(page, 20, query, unread), repo.support_thread_counts(request['actor']['staff_id'], kinds))
         return {"items": rows, "total": total, "page": page, "pageSize": 20, "counts": counts}
-    return response(await _cached(request, f"threads:{page}:{int(unread)}:{query.strip().lower()[:80]}", 2, load))
+    return response(await _cached(request, f"threads:{request['actor']['staff_id']}:{page}:{int(unread)}:{query.strip().lower()[:80]}", 2, load))
+
+
+async def followups(request: web.Request):
+    actor=request['actor']; page=_safe_page(request)
+    kinds=[kind for kind,permission in {'thread':'chats.read','customer':'customers.read','order':'orders.read'}.items() if staff.can(actor,permission)]
+    rows,total=await repo.staff_followups(actor['staff_id'],kinds,page,20,request.query.get('q',''))
+    counts=await repo.support_thread_counts(actor['staff_id'],kinds)
+    return response({'items':rows,'total':total,'page':page,'pageSize':20,'counts':counts})
 
 
 async def thread_detail(request: web.Request):
@@ -1083,13 +1092,13 @@ async def build_app():
         [
             web.get('/api/staff/profile', staff_profile), web.post('/api/staff/profile', staff_profile),
             web.get('/api/staff/team', staff_team), web.post('/api/staff/team', staff_team), web.get('/api/staff/audit', staff_audit),
-            web.get('/api/collaboration/{kind:thread|order}/{target_id:\\d+}', collaboration), web.post('/api/collaboration/{kind:thread|order}/{target_id:\\d+}', collaboration),
+            web.get('/api/collaboration/{kind:thread|customer|order}/{target_id:\\d+}', collaboration), web.post('/api/collaboration/{kind:thread|customer|order}/{target_id:\\d+}', collaboration),
             web.get("/", index), web.get("/health", health), web.get("/manifest.webmanifest", manifest), web.get("/service-worker.js", service_worker), web.get("/assets/{name}", asset),
             web.get("/api/config", config), web.post("/api/auth/password", password_login),
             web.post("/api/staff/password", staff_password), web.post("/api/logout", logout), web.get("/api/session", session),
             web.get("/api/dashboard", dashboard), web.post("/api/sales-gate", sales_gate), web.get("/api/orders", orders), web.get("/api/orders/{order_id:\\d+}", order_detail),
             web.post("/api/orders/{order_id:\\d+}/action", order_action), web.post("/api/orders/{order_id:\\d+}/plan", upload_plan),
-            web.get("/api/threads", threads), web.get("/api/threads/{user_id:\\d+}", thread_detail), web.post("/api/threads/{user_id:\\d+}/reply", reply_message),
+            web.get("/api/threads", threads), web.get("/api/followups", followups), web.get("/api/threads/{user_id:\\d+}", thread_detail), web.post("/api/threads/{user_id:\\d+}/reply", reply_message),
             web.get("/api/customers", customers), web.get("/media/customers/{user_id:\\d+}/avatar", customer_avatar), web.get("/media/customers/{user_id:\\d+}/photos/{index:\\d+}", customer_body_photo), web.get("/api/customers/{user_id:\\d+}", customer_detail),
             web.get("/media/orders/{order_id:\\d+}/photos/{index:\\d+}", order_body_photo), web.get("/media/orders/{order_id:\\d+}/receipt", order_receipt), web.get("/media/messages/{message_id:\\d+}", support_message_media), web.get("/api/sales", sales), web.get("/api/events", realtime_events),
         ]

@@ -103,8 +103,27 @@ export interface ThreadListItem {
 }
 
 export interface ThreadPage extends PageResult<ThreadListItem> {
-  counts: { all: number; unread_threads: number; unread_messages: number };
+  counts: { all: number; unread_threads: number; unread_messages: number; assigned:number };
 }
+
+export interface FollowUpItem {
+  target_type:"thread"|"customer"|"order";
+  target_id:number;
+  user_id:number;
+  order_id?:number;
+  telegram_id?:number;
+  name?:string;
+  first_name?:string;
+  last_name?:string;
+  username?:string;
+  product_title?:string;
+  note_body?:string;
+  note_author?:string;
+  note_created_at?:string;
+  updated_at:string;
+}
+
+export interface FollowUpPage extends PageResult<FollowUpItem> { counts:ThreadPage["counts"] }
 
 export interface MessageItem {
   id: number;

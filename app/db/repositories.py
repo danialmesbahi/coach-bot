@@ -565,15 +565,46 @@ async def support_threads(page: int = 1, page_size: int = 10, query: str = '', u
         return [dict(r) for r in rows], int(total or 0)
 
 
-async def support_thread_counts():
+async def support_thread_counts(staff_id: int | None = None, target_types: list[str] | None = None):
     async with db.acquire() as c:
         row = await c.fetchrow("""
             SELECT COUNT(DISTINCT user_id) AS all,
                    COUNT(DISTINCT user_id) FILTER (WHERE direction='customer' AND read_at IS NULL) AS unread_threads,
-                   COUNT(*) FILTER (WHERE direction='customer' AND read_at IS NULL) AS unread_messages
+                   COUNT(*) FILTER (WHERE direction='customer' AND read_at IS NULL) AS unread_messages,
+                   (SELECT COUNT(*) FROM staff_assignments WHERE staff_id=$1 AND target_type=ANY($2::text[])) AS assigned
             FROM support_messages
-        """)
-        return {key: int(row[key] or 0) for key in ('all','unread_threads','unread_messages')}
+        """, staff_id, target_types or [])
+        return {key: int(row[key] or 0) for key in ('all','unread_threads','unread_messages','assigned')}
+
+
+async def staff_assignment_count(staff_id: int, target_types: list[str]):
+    async with db.acquire() as c:
+        return int(await c.fetchval('SELECT COUNT(*) FROM staff_assignments WHERE staff_id=$1 AND target_type=ANY($2::text[])',staff_id,target_types) or 0)
+
+
+async def staff_followups(staff_id: int, target_types: list[str], page: int = 1, page_size: int = 20, query: str = ''):
+    page=max(1,page); page_size=max(1,min(page_size,50)); offset=(page-1)*page_size
+    query=(query or '').strip()[:80].lower(); term=f'%{query}%'
+    source="""
+        SELECT a.target_type,a.target_id,a.updated_at,u.id AS user_id,NULL::bigint AS order_id,
+               u.telegram_id,u.name,u.first_name,u.last_name,u.username,NULL::text AS product_title
+        FROM staff_assignments a JOIN users u ON u.id=a.target_id
+        WHERE a.staff_id=$1 AND a.target_type IN ('thread','customer') AND a.target_type=ANY($2::text[])
+        UNION ALL
+        SELECT a.target_type,a.target_id,a.updated_at,u.id,o.id,u.telegram_id,u.name,u.first_name,u.last_name,u.username,p.title
+        FROM staff_assignments a JOIN orders o ON o.id=a.target_id JOIN users u ON u.id=o.user_id JOIN products p ON p.id=o.product_id
+        WHERE a.staff_id=$1 AND a.target_type='order' AND a.target_type=ANY($2::text[])
+    """
+    where="""($3='' OR LOWER(COALESCE(name,'') || ' ' || COALESCE(first_name,'') || ' ' || COALESCE(last_name,'') || ' ' || COALESCE(username,'') || ' ' || COALESCE(product_title,'')) LIKE $4
+        OR telegram_id::text=$3 OR target_id::text=$3 OR ('ord-'||LPAD(order_id::text,6,'0')) LIKE $4)"""
+    async with db.acquire() as c:
+        total=await c.fetchval(f'SELECT COUNT(*) FROM ({source}) assigned WHERE {where}',staff_id,target_types,query,term)
+        rows=await c.fetch(f'''SELECT assigned.*,note.body AS note_body,note.author_name AS note_author,note.created_at AS note_created_at
+            FROM ({source}) assigned LEFT JOIN LATERAL (
+                SELECT body,author_name,created_at FROM staff_notes
+                WHERE target_type=assigned.target_type AND target_id=assigned.target_id ORDER BY id DESC LIMIT 1
+            ) note ON TRUE WHERE {where} ORDER BY assigned.updated_at DESC,assigned.target_type,assigned.target_id DESC LIMIT $5 OFFSET $6''',staff_id,target_types,query,term,page_size,offset)
+    return [dict(row) for row in rows],int(total or 0)
 
 
 async def unread_support_count():

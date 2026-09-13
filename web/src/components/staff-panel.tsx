@@ -161,18 +161,18 @@ export function StaffPanel({session,lang,onClose}:{session:Session;lang:Lang;onC
 }
 
 type CollaborationData={assignment:{staff_id:number|null;version:number;display_name?:string};notes:Array<{id:number;author_name:string;body:string;created_at:string}>;members:Array<{id:number;display_name:string}>};
-export function CollaborationPanel({kind,id,session,lang,version,notesOnly=false,variant="inline"}:{kind:"thread"|"order";id:number;session:Session;lang:Lang;version:number;notesOnly?:boolean;variant?:"inline"|"header"}) {
+export function CollaborationPanel({kind,id,session,lang,version,variant="inline"}:{kind:"thread"|"customer"|"order";id:number;session:Session;lang:Lang;version:number;variant?:"inline"|"header"}) {
   const [data,setData]=useState<CollaborationData>(),[note,setNote]=useState(""),[busy,setBusy]=useState(false),[error,setError]=useState(false);
   const noteId=useId();
   const path=`/api/collaboration/${kind}/${id}`,fa=lang==="fa";
-  const editable=can(session,notesOnly?"customers.read":kind==="thread"?"chats.reply":"orders.review");
-  const assignable=can(session,kind==="thread"?"chats.reply":"orders.review");
+  const permission={thread:"chats.reply",customer:"customers.read",order:"orders.review"}[kind];
+  const editable=can(session,permission),assignable=editable;
   useEffect(()=>{const controller=new AbortController();void api<CollaborationData>(path,session.csrf,{signal:controller.signal}).then(setData).catch(()=>{if(!controller.signal.aborted)setError(true);});return()=>controller.abort();},[path,session.csrf,version]);
   const change=async(body:unknown)=>{if(busy)return;setBusy(true);setError(false);try{setData(await api<CollaborationData>(path,session.csrf,{method:"POST",body:JSON.stringify(body)}));setNote("");}catch{setError(true);}finally{setBusy(false);}};
   const notes=data?.notes??[];
-  const context=kind==="order"?(fa?"گزارش داخلی این برنامه":"Internal plan report"):(fa?"یادداشت مشترک این شاگرد":"Shared client context");
+  const context=kind==="order"?(fa?"گزارش داخلی این برنامه":"Internal plan report"):kind==="customer"?(fa?"پیگیری پروندهٔ این شاگرد":"Client profile follow-up"):(fa?"پیگیری این گفت‌وگو":"Conversation follow-up");
   const date=(value:string)=>new Intl.DateTimeFormat(fa?"fa-IR":"en-GB",{dateStyle:"medium",timeStyle:"short"}).format(new Date(value));
-  return <details className={`collaboration-panel collaboration-panel--${variant}${notesOnly?" notes-only":""}`}>
+  return <details className={`collaboration-panel collaboration-panel--${variant}`}>
     <summary aria-label={fa?`${notes.length} یادداشت تیم · ${context}`:`${notes.length} team notes · ${context}`}><i aria-hidden="true"><StickyNote/></i>{variant==="inline"&&<span className="collaboration-heading"><strong>{fa?"یادداشت‌های تیم":"Team notes"}</strong><small>{context}</small></span>}<span className="collaboration-count" aria-label={fa?`${notes.length} یادداشت`:`${notes.length} notes`}>{notes.length}</span>{variant==="inline"&&<ChevronDown className="collaboration-chevron" aria-hidden="true"/>}</summary>
     <div className="collaboration-body">{error&&<p className="collaboration-error" role="alert">{fa?"تغییر ذخیره نشد؛ دوباره تلاش کن.":"The change was not saved. Please try again."}</p>}{assignable&&data&&<div className="collaboration-assignment">{session.role!=="staff"?<SelectMenu label={fa?"مسئول پیگیری":"Assignee"} value={String(data.assignment.staff_id??"")} disabled={busy} onChange={value=>void change({action:"assign",staff_id:value?Number(value):null,version:data.assignment.version})} options={[["",fa?"بدون مسئول":"Unassigned"],...data.members.map(member=>[String(member.id),member.display_name] as [string,string])]}/>:<button disabled={busy||Boolean(data.assignment.staff_id&&data.assignment.staff_id!==session.staffId)} onClick={()=>void change({action:"assign",staff_id:data.assignment.staff_id===session.staffId?null:session.staffId,version:data.assignment.version})}>{data.assignment.staff_id===session.staffId?(fa?"آزاد کردن":"Release"):(fa?"من پیگیری می‌کنم":"Assign to me")}</button>}</div>}
       {editable&&<form className="collaboration-compose" onSubmit={e=>{e.preventDefault();void change({action:"note",text:note});}}><label htmlFor={noteId}><span className="sr-only">{fa?"یادداشت داخلی برای اعضای تیم":"Internal note for team members"}</span><textarea id={noteId} value={note} maxLength={2000} placeholder={fa?"یادداشت داخلی برای تیم…":"Internal note for your team…"} onChange={e=>setNote(e.target.value)}/></label><button type="submit" disabled={busy||!note.trim()} aria-label={fa?"ثبت یادداشت":"Add note"}>{busy?<LoaderCircle className="spin"/>:<Send/>}<span>{fa?"ثبت":"Add"}</span></button></form>}

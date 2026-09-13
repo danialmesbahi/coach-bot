@@ -122,7 +122,7 @@ def test_all_authenticated_handlers_have_explicit_policy():
     assert 'unknown_handler' not in staff.ROUTE_PERMISSIONS
 
 
-def test_customer_reader_can_leave_profile_note_but_cannot_claim_chat(monkeypatch):
+def test_customer_reader_can_leave_and_claim_profile_followup(monkeypatch):
     from contextlib import asynccontextmanager
 
     @asynccontextmanager
@@ -143,7 +143,7 @@ def test_customer_reader_can_leave_profile_note_but_cannot_claim_chat(monkeypatc
 
     class Request(dict):
         method = 'POST'
-        match_info = {'kind': 'thread', 'target_id': '9'}
+        match_info = {'kind': 'customer', 'target_id': '9'}
 
         def __init__(self, body):
             super().__init__(actor=dict(role='staff', staff_id=4, display_name='Designer', permissions=['customers.read']))
@@ -155,5 +155,9 @@ def test_customer_reader_can_leave_profile_note_but_cannot_claim_chat(monkeypatc
     monkeypatch.setattr(webapp.db, 'acquire', acquire)
     assert asyncio.run(webapp.collaboration(Request({'action': 'note', 'text': 'Check posture'}))).status == 200
     assert any('INSERT INTO staff_notes' in call.args[0] for call in connection.execute.await_args_list)
-    with pytest.raises(web.HTTPForbidden):
-        asyncio.run(webapp.collaboration(Request({'action': 'assign', 'staff_id': 4, 'version': 1})))
+    connection.fetchrow.side_effect = [
+        {'id': 4, 'role': 'staff', 'permissions': ['customers.read']},
+        {'staff_id': None, 'version': 1},
+        {'staff_id': 4, 'version': 2, 'display_name': 'Designer'},
+    ]
+    assert asyncio.run(webapp.collaboration(Request({'action': 'assign', 'staff_id': 4, 'version': 1}))).status == 200
