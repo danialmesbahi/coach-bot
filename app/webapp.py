@@ -932,7 +932,7 @@ async def _send_reply(request: web.Request):
     else:
         sent = await bot.send_message(user["telegram_id"], text)
     await repo.add_support_message(
-        user["telegram_id"], sent.message_id, direction="sensi", sender_telegram_id=request["actor"]["telegram_id"], content_type=content_type,
+        user["telegram_id"], sent.message_id, direction="sensi", sender_telegram_id=request["actor"], content_type=content_type,
         content_text=text or None, file_id=file_id, file_name=filename or None,
         mime_type=inspected[0] if inspected else None, file_size=len(payload) if payload else None,
     )

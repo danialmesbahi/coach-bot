@@ -19,6 +19,15 @@ try {
       await route.fulfill({json:path==='/api/session'?{role:'leader',staffId:1,displayName:'Coach',username:'coach',csrf:'fixture',permissions:[]}:{items:[product],channels:[{chat_id:-100123,title:'Private members'}],total:1,page:1,pageSize:20}});
     });
     await page.goto(`${process.env.TEST_BASE_URL||'http://127.0.0.1:8091'}/catalog`);
+    await page.locator('.catalog-card').waitFor();
+    const arrows=await page.locator('.catalog-page .pager button').evaluateAll(buttons=>buttons.map(button=>{
+      const svg=button.querySelector('svg'),icon=svg.getBoundingClientRect(),box=button.getBoundingClientRect();
+      return {right:svg.classList.contains('lucide-arrow-right'),scale:new DOMMatrix(getComputedStyle(svg).transform).a,side:Math.sign(icon.x+icon.width/2-box.x-box.width/2)};
+    }));
+    assert.deepEqual(arrows,[
+      {right:true,scale:lang==='fa'?1:-1,side:lang==='fa'?1:-1},
+      {right:false,scale:lang==='fa'?1:-1,side:lang==='fa'?-1:1},
+    ],`pagination arrow direction and label placement (${lang}, ${width})`);
     await page.locator('.catalog-card').click();
     const dialog=page.locator('.catalog-dialog');
     await dialog.waitFor();
