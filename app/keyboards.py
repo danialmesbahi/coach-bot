@@ -172,7 +172,7 @@ def admin_team_reply_kb():
     ])
 
 
-def products_kb(products):
+def products_kb(products, page=1, pages=1):
     b = InlineKeyboardBuilder()
     for p in products:
         if not p.get('purchased_before'):
@@ -186,8 +186,10 @@ def products_kb(products):
         else:
             text=f"{p['title']} — {order_status_fa(p.get('latest_status') or 'paid')}"; data=f"subscription:status:{p['id']}"; style=None
         b.button(text=text, callback_data=data, style=style)
-    b.button(text=BACK, callback_data='home')
     b.adjust(1)
+    nav=rtl_pager(f'products:page:{page-1}' if page>1 else None,f'products:page:{page+1}' if page<pages else None)
+    if nav: b.row(*nav)
+    b.row(InlineKeyboardButton(text=BACK,callback_data='home'))
     return b.as_markup()
 
 

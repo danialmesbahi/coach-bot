@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
 import "./globals.css";
+import "./catalog.css";
 
 export const metadata: Metadata = {
   title: { default: "Sensi Console", template: "%s · Sensi" },

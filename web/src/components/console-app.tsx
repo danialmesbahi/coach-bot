@@ -1,6 +1,7 @@
 "use client";
 import { SelectMenu } from "@/components/select-menu";
 import { PasswordField } from "@/components/password-field";
+import { Catalog, type CatalogData } from "./catalog";
 
 import { chatViewport } from "@/lib/chat-viewport";
 /* eslint-disable @next/next/no-img-element -- Telegram avatars are authenticated same-origin streams. */
@@ -20,7 +21,7 @@ import type {
   ProductOption, RealtimeUpdate, SalesData, SalesPeriod, Session, ThreadDetailData, ThreadListItem, ThreadPage, View,
 } from "@/lib/types";
 
-type PageData = DashboardData | CustomerPage | OrderPage | ThreadPage | FollowUpPage | SalesData;
+type PageData = DashboardData | CustomerPage | OrderPage | ThreadPage | FollowUpPage | SalesData | CatalogData;
 type MessageFilter = "all" | "unread";
 type FollowupState = "all" | "unseen" | "seen";
 type FollowupSort = "newest" | "oldest";
@@ -69,6 +70,7 @@ function loadAvatar(userId: number) {
 
 const periods: SalesPeriod[] = ["day", "week", "month", "all"];
 const realtimeTables: Record<View, string[]> = {
+  catalog: ["products"],
   dashboard: ["users", "orders", "support_messages", "sales_gate", "staff_assignments", "staff_notes"],
   followups: ["staff_assignments", "staff_notes", "users", "orders"],
   orders: ["orders", "users", "products", "staff_assignments", "staff_notes"],
@@ -348,6 +350,7 @@ function OrderDrawer({ data: o, session, realtimeVersion, initialNotesOpen=false
   const f = o.form_snapshot ?? {};
   const [info, setInfo] = useState(""); const [fileName, setFileName] = useState(""); const [busy, setBusy] = useState(false); const [feedback, setFeedback] = useState<"success" | "error" | "notification">(); const [requestOpen,setRequestOpen] = useState(false);
   const copy = lang === "fa" ? { workspace:"فضای انجام کار", next:"اقدام بعدی", details:"اطلاعات موردنیاز طراحی", photos:"عکس‌های این سفارش", receipt:"رسید پرداخت", openReceipt:"نمایش رسید کامل", approved:"تغییر با موفقیت ثبت شد", failed:"عملیات انجام نشد؛ دوباره تلاش کنید.", request:"اطلاعات تکمیلی", delivery:"تحویل برنامه", resume:"ادامه طراحی و آماده‌سازی فایل" } : { workspace:"Work workspace", next:"Next action", details:"Design brief", photos:"Order photos", receipt:"Payment receipt", openReceipt:"Open full receipt", approved:"Change saved successfully", failed:"The action failed. Please try again.", request:"Additional information", delivery:"Plan delivery", resume:"Continue design and prepare the file" };
+  const automatic = Boolean(o.product_snapshot?.delivery_mode && o.product_snapshot.delivery_mode !== "manual");
   const manualReceipt = o.status === "awaiting_receipt" && o.payment_method === "card_to_card";
   const isPaid = o.payment_status === "paid" || Boolean(o.paid_at);
   const steps = lang === "fa" ? ["پرداخت", "بررسی اطلاعات", "طراحی", "تحویل"] : ["Payment", "Review", "Design", "Delivery"];
@@ -356,6 +359,8 @@ function OrderDrawer({ data: o, session, realtimeVersion, initialNotesOpen=false
   const submit = async (task: () => Promise<void>) => { if (busy) return; setBusy(true); setFeedback(undefined); try { await task(); setFeedback("success"); setRequestOpen(false); setInfo(""); } catch (error) { setFeedback(error instanceof Error && error.message === "notification_failed" ? "notification" : "error"); } finally { setBusy(false); } };
   const userId = o.customer_id ?? o.user_id;
   return <div className="order-workspace order-workspace-v2">
+    {automatic&&<p className="order-payment-note">{o.fulfillment_error?(lang==="fa"?"ارسال خودکار ناموفق بود؛ سامانه دوباره تلاش می‌کند. دسترسی کانال و فایل دوره را بررسی کن.":"Automatic delivery failed and will retry. Check the channel permissions and product file."):(lang==="fa"?"تحویل این سفارش پس از تأیید پرداخت به‌صورت خودکار انجام می‌شود.":"This order is fulfilled automatically after payment verification.")}</p>}
+    {Array.isArray(f.custom_answers)&&<section className="profile-section"><h3>{lang==="fa"?"پاسخ‌های اختصاصی این دوره":"Product questionnaire"}</h3><div className="profile-facts">{(f.custom_answers as Array<{question:string;answer:string}>).map((answer,index)=><ProfileFact key={index} icon={<FileText/>} label={answer.question} value={answer.answer} wide/>)}</div></section>}
     <ol className="order-steps" aria-label={lang === "fa" ? "مسیر انجام دوره" : "Order progress"}>{steps.map((label,index) => <li key={label} className={index < step ? "done" : index === step ? "current" : ""} aria-current={index === step ? "step" : undefined}><b>{index < step ? <Check/> : index+1}</b><span>{label}</span></li>)}</ol>
     <section className={`order-work-hero status-${o.status}`}><div><span>{copy.workspace}</span><bdi>{orderCode(o.id)}</bdi><h3>{o.product_title}</h3><p>{copy.next} · <strong>{next}</strong></p></div><Status value={o.status} lang={lang}/></section>
     <section className="order-client-strip">{userId ? <ConversationAvatar userId={userId} name={displayName(o,lang)}/> : <span className="conversation-avatar" aria-hidden="true">{initial(displayName(o,lang))}</span>}<div><small>{t("customer")}</small><strong>{displayName(o,lang)}</strong><span dir="ltr">{o.username ? `@${o.username}` : o.telegram_id ? `ID ${o.telegram_id}` : o.phone ?? "—"}</span></div><dl><div><dt>{t("amount")}</dt><dd>{money(o.amount,lang)}</dd></div><div><dt>{t("created")}</dt><dd>{formatDate(o.created_at,lang,true)}</dd></div></dl></section>
@@ -366,7 +371,7 @@ function OrderDrawer({ data: o, session, realtimeVersion, initialNotesOpen=false
     <section className="profile-section order-brief"><header><div><UserRound/><h3>{copy.details}</h3></div></header><div className="profile-facts"><ProfileFact icon={<CalendarDays/>} label={t("age")} value={String(f.age ?? "—")}/><ProfileFact icon={<UserRound/>} label={t("gender")} value={String(f.gender ?? "—")}/><ProfileFact icon={<Ruler/>} label={t("height")} value={f.height_cm ? `${f.height_cm} cm` : "—"}/><ProfileFact icon={<Scale/>} label={t("weight")} value={f.weight_kg ? `${f.weight_kg} kg` : "—"}/><ProfileFact icon={<Target/>} label={t("goal")} value={String(f.goal ?? "—")} wide/><ProfileFact icon={<Dumbbell/>} label={t("history")} value={String(f.training_history ?? "—")} wide/>{f.notes ? <ProfileFact icon={<Activity/>} label={t("notes")} value={String(f.notes)} wide/> : null}</div></section>
     <section className="profile-section"><header><div><HeartPulse/><h3>{lang === "fa" ? "تغذیه و محدودیت‌ها" : "Nutrition & restrictions"}</h3></div></header><div className="profile-facts">{[["allergy",lang === "fa" ? "حساسیت‌ها" : "Allergies"],["restriction",lang === "fa" ? "محدودیت‌ها" : "Restrictions"],["supplements",lang === "fa" ? "مکمل‌ها" : "Supplements"]].map(([key,label]) => <ProfileFact key={key} icon={<HeartPulse/>} label={label} value={String(f[key] || (lang === "fa" ? "ثبت نشده" : "Not provided"))} wide/>)}</div></section>
     <section className="profile-section"><header><div><Images/><h3>{copy.photos}</h3></div><span>{o.photo_count ?? 0}</span></header>{(o.photo_count ?? 0) > 0 ? <PhotoGallery count={o.photo_count!} source={(index) => `/media/orders/${o.id}/photos/${index}`} lang={lang} onPreview={onPreview}/> : <p className="order-photo-empty">{lang === "fa" ? "عکسی برای این سفارش ثبت نشده است." : "No photos attached to this order."}</p>}</section>
-    {!readOnly && session.permissions.some(p=>p==="orders.review"||p==="orders.deliver"||p==="payments.review") && (manualReceipt || ["paid","needs_info","in_progress","ready"].includes(o.status)) && <section className="order-actions"><header><ClipboardList/><div><h3>{copy.next}</h3><p>{next}</p></div></header>{feedback && <p className={`action-feedback ${feedback === "success" ? "success" : "error"}`} role="status">{feedback === "success" ? copy.approved : feedback === "notification" ? (lang === "fa" ? "وضعیت ذخیره شد، اما پیام تلگرام ارسال نشد. از گفت‌وگوی شاگرد دوباره پیام بدهید." : "Status saved, but Telegram delivery failed. Send the message again from the conversation.") : copy.failed}</p>}<div className="action-stack">
+    {!readOnly && (!automatic || manualReceipt) && ["orders.review","orders.deliver","payments.review"].some(p=>can(session,p)) && (manualReceipt || ["paid","needs_info","in_progress","ready"].includes(o.status)) && <section className="order-actions"><header><ClipboardList/><div><h3>{copy.next}</h3><p>{next}</p></div></header>{feedback && <p className={`action-feedback ${feedback === "success" ? "success" : "error"}`} role="status">{feedback === "success" ? copy.approved : feedback === "notification" ? (lang === "fa" ? "وضعیت ذخیره شد، اما پیام تلگرام ارسال نشد. از گفت‌وگوی شاگرد دوباره پیام بدهید." : "Status saved, but Telegram delivery failed. Send the message again from the conversation.") : copy.failed}</p>}<div className="action-stack">
       {can(session,"payments.review") && manualReceipt && <><button disabled={busy} className="button success" onClick={() => submit(() => action(`/api/orders/${o.id}/action`, { method:"POST", body:JSON.stringify({ action:"approve_receipt" }) }))}>{busy ? <LoaderCircle className="spin"/> : <Check/>}{t("approve")}</button><button disabled={busy} className="button danger" onClick={() => confirm(t("reject")) && submit(() => action(`/api/orders/${o.id}/action`, { method:"POST", body:JSON.stringify({ action:"reject_receipt" }) }))}><X/>{t("reject")}</button></>}
       {can(session,"orders.review") && ["paid","needs_info"].includes(o.status) && <button disabled={busy} className="button primary" onClick={() => submit(() => action(`/api/orders/${o.id}/action`, { method:"POST", body:JSON.stringify({ action:"in_progress" }) }))}>{busy ? <LoaderCircle className="spin"/> : <Check/>}{lang === "fa" ? "تأیید اطلاعات و شروع طراحی" : "Approve information & start design"}</button>}
       {can(session,"orders.deliver") && ["in_progress","ready"].includes(o.status) && <form className="upload-form" onSubmit={(event) => { event.preventDefault(); const element=event.currentTarget; const form = new FormData(element); submit(async () => { await action(`/api/orders/${o.id}/plan`, { method:"POST", body:form }); element.reset(); setFileName(""); }); }}><div className="upload-title"><Upload/><div><strong>{copy.delivery}</strong><span>{lang === "fa" ? "فایل نهایی مستقیماً برای شاگرد ارسال می‌شود." : "The final file will be sent directly to the client."}</span></div></div><label className="file-picker"><Upload/><span>{fileName || t("chooseFile")}</span><input name="file" type="file" accept=".pdf,.doc,.docx,.xlsx,.jpg,.jpeg,.png" disabled={busy} onChange={(event) => setFileName(event.currentTarget.files?.[0]?.name ?? "")} required /></label><button disabled={busy || !fileName} className="button primary" type="submit">{busy ? <LoaderCircle className="spin"/> : <Send/>}{lang === "fa" ? "ارسال فایل و تحویل دوره" : "Send file & complete order"}</button></form>}
@@ -492,7 +497,7 @@ function CustomerDrawer({ data, session, realtimeVersion, initialNotesOpen=false
   const [openedAt] = useState(Date.now);
   const u = data.user;
   const name = displayName(u, lang);
-  const activeCourses = data.orders.filter((order) => ["paid", "needs_info", "in_progress", "ready"].includes(order.status) || (order.status === "delivered" && Boolean(order.delivered_at) && Date.parse(order.delivered_at!) + 30 * 86400000 > openedAt));
+  const activeCourses = data.orders.filter((order) => ["paid", "needs_info", "in_progress", "ready"].includes(order.status) || (order.status === "delivered" && Boolean(order.delivered_at) && (order.subscription_expires_at?Date.parse(order.subscription_expires_at):Date.parse(order.delivered_at!) + (order.duration_days??30) * 86400000) > openedAt));
   const paidOrders = data.orders.filter((order) => Boolean(order.paid_at));
   const totalPaid = paidOrders.reduce((total, order) => total + Number(order.amount || 0), 0);
   const copy = lang === "fa" ? {
@@ -542,7 +547,7 @@ export default function ConsoleApp({ initialView = "dashboard" }: { initialView?
   const [data, setData] = useState<PageData>(); const [loading, setLoading] = useState(true); const [failed, setFailed] = useState(false);
   const [unread, setUnread] = useState(0);
   const [assigned, setAssigned] = useState(0);
-  const [pages, setPages] = useState<Record<View, number>>({ dashboard:1, followups:1, orders:1, messages:1, customers:1, sales:1 });
+  const [pages, setPages] = useState<Record<View, number>>({ dashboard:1, followups:1, orders:1, messages:1, customers:1, sales:1, catalog:1 });
   const [filters, setFilters] = useState({ q:"", activity:"all", product:"", sort:"recent" });
   const [orderStatus, setOrderStatus] = useState("all");
   const [orderSearch, setOrderSearch] = useState("");
@@ -589,6 +594,7 @@ export default function ConsoleApp({ initialView = "dashboard" }: { initialView?
   useEffect(() => {
     if (!session) return;
     let path = `/api/dashboard?period=${period}`;
+    if (view === "catalog") path = `/api/catalog?page=${pages.catalog}`;
     if (view === "orders") { const params = new URLSearchParams({ page:String(pages.orders) }); if (orderStatus !== "all") params.set("status",orderStatus); if (orderSearch) params.set("q",orderSearch); path = `/api/orders?${params}`; }
     if (view === "messages") { const params = new URLSearchParams({ page:String(pages.messages) }); if (messageSearch) params.set("q",messageSearch); if (messageFilter === "unread") params.set("unread","1"); path = `/api/threads?${params}`; }
     if (view === "followups") { const params = new URLSearchParams({ page:String(pages.followups),state:followupState,sort:followupSort }); if (followupSearch) params.set("q",followupSearch); path = `/api/followups?${params}`; }
@@ -646,14 +652,14 @@ export default function ConsoleApp({ initialView = "dashboard" }: { initialView?
     window.scrollTo({ top:0, behavior:"auto" });
   }, []);
   const navigate = (next: View) => { if (next !== view) showView(next, true); };
-  useEffect(() => { const pop = () => { const next = location.pathname.split("/")[1] as View; showView(["followups","orders","messages","customers","sales"].includes(next) ? next : "dashboard", false); }; addEventListener("popstate", pop); return () => removeEventListener("popstate", pop); }, [showView]);
+  useEffect(() => { const pop = () => { const next = location.pathname.split("/")[1] as View; showView(["followups","orders","messages","customers","sales","catalog"].includes(next) ? next : "dashboard", false); }; addEventListener("popstate", pop); return () => removeEventListener("popstate", pop); }, [showView]);
   const setPage = (page: number) => setPages((old) => ({ ...old, [view]:page }));
   const mutate = async (path: string, body: unknown) => { if (!session) return; await api(path, session.csrf, { method:"POST", body:JSON.stringify(body) }); setRefresh((value) => value + 1); };
 
   if (session === undefined) return <main className="boot"><div className="brand-mark"><span>S</span></div><LoaderCircle className="spin"/></main>;
   if (!session) return <Login lang={lang}/>;
-  const allNav: Array<[View, CopyKey, typeof LayoutDashboard]> = [["dashboard","dashboard",LayoutDashboard],["followups","followups",BellRing],["orders","orders",ClipboardList],["messages","messages",MessageCircle],["customers","customers",UsersRound],["sales","sales",BarChart3]];
-  const nav = allNav.filter(([key])=>key==="dashboard"||(key==="followups"?["chats.read","customers.read","orders.read"].some(permission=>can(session,permission)):can(session,({orders:"orders.read",messages:"chats.read",customers:"customers.read",sales:"sales.read"} as Record<string,string>)[key])));
+  const allNav: Array<[View, CopyKey, typeof LayoutDashboard]> = [["dashboard","dashboard",LayoutDashboard],["followups","followups",BellRing],["orders","orders",ClipboardList],["messages","messages",MessageCircle],["customers","customers",UsersRound],["sales","sales",BarChart3],["catalog","catalog",Dumbbell]];
+  const nav = allNav.filter(([key])=>key==="catalog"?session.role!=="staff":key==="dashboard"||(key==="followups"?["chats.read","customers.read","orders.read"].some(permission=>can(session,permission)):can(session,({orders:"orders.read",messages:"chats.read",customers:"customers.read",sales:"sales.read"} as Record<string,string>)[key])));
   const customerData = renderedView === "customers" && data && "products" in data ? data as CustomerPage : undefined;
   const headerControls = <><div className={`sync-status glass ${connection} ${lang}`} role="status" aria-live="polite"><span>{connection === "online" ? t("connected") : t(connection)}</span>{connection !== "online" && <LoaderCircle className="spin"/>}<i/></div><header className="topbar glass"><button className="top-button" onClick={()=>setStaffOpen(true)} aria-label={lang==="fa"?"پروفایل و مدیریت تیم":"Profile and team"}><UserRound/></button><button className="top-button" onClick={() => setLang(lang === "fa" ? "en" : "fa")} aria-label="Language">{lang === "fa" ? "EN" : "فا"}</button><button className="top-button" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} aria-label="Theme">{theme === "dark" ? <Sun/> : <Moon/>}</button></header></>;
   return <div className={`app-shell ${collapsed === "1" ? "nav-collapsed" : ""}${view === "customers" ? " customers-view" : ""}`}>
@@ -674,6 +680,7 @@ export default function ConsoleApp({ initialView = "dashboard" }: { initialView?
 }
 
 function ViewContent(props: { view: View; data: PageData; loading: boolean; session: Session; lang: Lang; t: (key: CopyKey) => string; period: SalesPeriod; setPeriod: (value: SalesPeriod) => void; pages: Record<View, number>; setPage: (page: number) => void; filters: {q:string;activity:string;product:string;sort:string}; setFilters: React.Dispatch<React.SetStateAction<{q:string;activity:string;product:string;sort:string}>>; searchDraft: string; setSearchDraft: (value:string) => void; orderStatus:string; setOrderStatus:(value:string)=>void; orderSearch:string; setOrderSearch:(value:string)=>void; orderSearchDraft:string; setOrderSearchDraft:(value:string)=>void; messageFilter:MessageFilter; setMessageFilter:(value:MessageFilter)=>void; messageSearch:string; setMessageSearch:(value:string)=>void; messageSearchDraft:string; setMessageSearchDraft:(value:string)=>void; followupSearch:string; setFollowupSearch:(value:string)=>void; followupSearchDraft:string; setFollowupSearchDraft:(value:string)=>void; followupState:FollowupState; setFollowupState:(value:FollowupState)=>void; followupSort:FollowupSort; setFollowupSort:(value:FollowupSort)=>void; navigate:(view:View)=>void; openDrawer:(state:DrawerState)=>void; mutate:(path:string,body:unknown)=>Promise<void>; refresh:()=>void }) {
+  if (props.view === "catalog") return <Catalog data={props.data as CatalogData} lang={props.lang} session={props.session} setPage={props.setPage} refresh={props.refresh}/>;
   if (props.view === "dashboard") return <Dashboard {...props} data={props.data as DashboardData}/>;
   if (props.view === "customers") return <Customers {...props} data={props.data as CustomerPage}/>;
   if (props.view === "orders") return <Orders {...props} data={props.data as OrderPage}/>;

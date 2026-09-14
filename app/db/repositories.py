@@ -185,9 +185,9 @@ async def get_products_for_user(tg_id: int):
           LEFT JOIN LATERAL (
             SELECT o.id,o.status,o.renewal_of_order_id,
                    CASE WHEN o.delivered_at IS NULL THEN NULL ELSE
-                     CEIL(EXTRACT(EPOCH FROM (o.delivered_at + INTERVAL '30 days' - NOW()))/86400.0)::int END AS days_remaining,
+                     CEIL(EXTRACT(EPOCH FROM (COALESCE(o.subscription_expires_at,o.delivered_at + o.duration_days * INTERVAL '1 day') - NOW()))/86400.0)::int END AS days_remaining,
                    (o.status='delivered' AND o.delivered_at IS NOT NULL
-                    AND o.delivered_at + INTERVAL '30 days' <= NOW() + INTERVAL '5 days'
+                    AND COALESCE(o.subscription_expires_at,o.delivered_at + o.duration_days * INTERVAL '1 day') <= NOW() + INTERVAL '5 days'
                     AND NOT EXISTS (SELECT 1 FROM orders newer
                       WHERE newer.user_id=o.user_id AND newer.product_id=o.product_id
                         AND newer.status<>'cancelled'
@@ -206,17 +206,22 @@ async def get_product(product_id: int):
         return dict(r) if r else None
 
 async def create_order(tg_id: int, product: dict, data: dict, payment_method: str, renewal_of_order_id: int | None = None):
+    from app.services.catalog import purchase_terms
     async with db.acquire() as c:
         async with c.transaction():
             user = await c.fetchrow("SELECT id FROM users WHERE telegram_id=$1 FOR UPDATE", tg_id)
             if not user: raise ValueError("user not found")
+            current_product=await c.fetchrow('SELECT * FROM products WHERE id=$1 AND active AND NOT archived FOR SHARE',product['id'])
+            if not current_product or current_product['version']!=product.get('version',1):
+                raise ValueError('product changed')
+            product=dict(current_product)
             if renewal_of_order_id:
                 eligible=await c.fetchval("""
                   SELECT EXISTS(
                     SELECT 1 FROM orders old
                     WHERE old.id=$1 AND old.user_id=$2 AND old.product_id=$3
                       AND old.status='delivered' AND old.delivered_at IS NOT NULL
-                      AND old.delivered_at + INTERVAL '30 days' <= NOW() + INTERVAL '5 days'
+                      AND COALESCE(old.subscription_expires_at,old.delivered_at + old.duration_days * INTERVAL '1 day') <= NOW() + INTERVAL '5 days'
                       AND NOT EXISTS (SELECT 1 FROM orders newer
                         WHERE newer.user_id=old.user_id AND newer.product_id=old.product_id
                           AND newer.status<>'cancelled'
@@ -232,16 +237,16 @@ async def create_order(tg_id: int, product: dict, data: dict, payment_method: st
                 """,user['id'],product['id'])
                 if purchased: raise ValueError('plan already purchased; renew it')
             row = await c.fetchrow("""
-              INSERT INTO orders(user_id,product_id,amount,status,form_snapshot,payment_method,payment_status,renewal_of_order_id)
-              VALUES($1,$2,$3,'awaiting_payment',$4::jsonb,$5,'pending',$6) RETURNING *
-            """, user['id'], product['id'], product['price_irr'], json.dumps(data, ensure_ascii=False), payment_method, renewal_of_order_id)
+              INSERT INTO orders(user_id,product_id,amount,status,form_snapshot,payment_method,payment_status,renewal_of_order_id,duration_days,product_snapshot)
+              VALUES($1,$2,$3,'awaiting_payment',$4::jsonb,$5,'pending',$6,$7,$8::jsonb) RETURNING *
+            """, user['id'], product['id'], product['price_irr'], json.dumps(data, ensure_ascii=False), payment_method, renewal_of_order_id,product['duration_days'],json.dumps(purchase_terms(product),ensure_ascii=False))
             await c.execute(
                 "INSERT INTO user_profile_history(user_id,product_code,order_id,snapshot) VALUES($1,$2,$3,$4::jsonb)",
                 user['id'], product.get('code'), row['id'], json.dumps(data, ensure_ascii=False)
             )
             photos=_json_list(data.get('body_photo_file_ids'))[:6]
             last_file_id=(photos[-1].get('file_id') if photos and isinstance(photos[-1],dict) else photos[-1] if photos else None)
-            await c.execute(
+            if 'body_photo' in _json_list(product.get('form_fields')): await c.execute(
                 "UPDATE users SET body_photo_file_id=$2,body_photo_file_ids=$3::jsonb,updated_at=NOW() WHERE id=$1",
                 user['id'],last_file_id,json.dumps(photos,ensure_ascii=False),
             )
@@ -318,7 +323,7 @@ async def mark_mock_payment(order_id: int, gateway_ref: str):
 async def get_order(order_id: int):
     async with db.acquire() as c:
         r = await c.fetchrow("""
-          SELECT o.*,p.code product_code,p.title product_title,u.id AS customer_id,
+          SELECT o.*,p.code product_code,COALESCE(o.product_snapshot->>'title',p.title) AS product_title,u.id AS customer_id,
                  u.telegram_id,u.name,u.first_name,u.last_name,u.username,u.phone
           FROM orders o JOIN products p ON p.id=o.product_id JOIN users u ON u.id=o.user_id WHERE o.id=$1
         """, order_id)
@@ -327,11 +332,11 @@ async def get_order(order_id: int):
 async def get_user_order(order_id: int, tg_id: int):
     async with db.acquire() as c:
         r = await c.fetchrow("""
-          SELECT o.*, p.title product_title, p.code product_code,
+          SELECT o.*, COALESCE(o.product_snapshot->>'title',p.title) AS product_title, p.code product_code,
                  CASE WHEN o.delivered_at IS NULL THEN NULL ELSE
-                   CEIL(EXTRACT(EPOCH FROM (o.delivered_at + INTERVAL '30 days' - NOW()))/86400.0)::int END AS days_remaining,
+                   CEIL(EXTRACT(EPOCH FROM (COALESCE(o.subscription_expires_at,o.delivered_at + o.duration_days * INTERVAL '1 day') - NOW()))/86400.0)::int END AS days_remaining,
                  (o.status='delivered' AND o.delivered_at IS NOT NULL
-                  AND o.delivered_at + INTERVAL '30 days' <= NOW() + INTERVAL '5 days'
+                  AND COALESCE(o.subscription_expires_at,o.delivered_at + o.duration_days * INTERVAL '1 day') <= NOW() + INTERVAL '5 days'
                   AND NOT EXISTS (SELECT 1 FROM orders newer WHERE newer.user_id=o.user_id AND newer.product_id=o.product_id
                     AND newer.status<>'cancelled' AND (newer.created_at,newer.id)>(o.created_at,o.id))) AS renewal_eligible,
                  (SELECT r.id FROM orders r WHERE r.renewal_of_order_id=o.id AND r.status<>'cancelled' ORDER BY r.created_at DESC LIMIT 1) AS active_renewal_id,
@@ -345,11 +350,11 @@ async def get_user_order(order_id: int, tg_id: int):
 async def get_user_orders(tg_id: int):
     async with db.acquire() as c:
         rows = await c.fetch("""
-          SELECT o.*,p.title product_title,
+          SELECT o.*,COALESCE(o.product_snapshot->>'title',p.title) AS product_title,
                  CASE WHEN o.delivered_at IS NULL THEN NULL ELSE
-                   CEIL(EXTRACT(EPOCH FROM (o.delivered_at + INTERVAL '30 days' - NOW()))/86400.0)::int END AS days_remaining,
+                   CEIL(EXTRACT(EPOCH FROM (COALESCE(o.subscription_expires_at,o.delivered_at + o.duration_days * INTERVAL '1 day') - NOW()))/86400.0)::int END AS days_remaining,
                  (o.status='delivered' AND o.delivered_at IS NOT NULL
-                  AND o.delivered_at + INTERVAL '30 days' <= NOW() + INTERVAL '5 days'
+                  AND COALESCE(o.subscription_expires_at,o.delivered_at + o.duration_days * INTERVAL '1 day') <= NOW() + INTERVAL '5 days'
                   AND NOT EXISTS (SELECT 1 FROM orders newer WHERE newer.user_id=o.user_id AND newer.product_id=o.product_id
                     AND newer.status<>'cancelled' AND (newer.created_at,newer.id)>(o.created_at,o.id))) AS renewal_eligible,
                  (SELECT r.id FROM orders r WHERE r.renewal_of_order_id=o.id AND r.status<>'cancelled' ORDER BY r.created_at DESC LIMIT 1) AS active_renewal_id,
@@ -372,14 +377,14 @@ async def active_courses(tg_id: int):
     async with db.acquire() as c:
         rows=await c.fetch("""
           SELECT * FROM (
-            SELECT DISTINCT ON (o.product_id) o.*,p.title AS product_title,
+            SELECT DISTINCT ON (o.product_id) o.*,COALESCE(o.product_snapshot->>'title',p.title) AS product_title,
               CASE WHEN o.delivered_at IS NULL THEN NULL ELSE
-                CEIL(EXTRACT(EPOCH FROM (o.delivered_at + INTERVAL '30 days' - NOW()))/86400.0)::int END AS days_remaining
+                CEIL(EXTRACT(EPOCH FROM (COALESCE(o.subscription_expires_at,o.delivered_at + o.duration_days * INTERVAL '1 day') - NOW()))/86400.0)::int END AS days_remaining
             FROM orders o JOIN users u ON u.id=o.user_id JOIN products p ON p.id=o.product_id
             WHERE u.telegram_id=$1 AND o.paid_at IS NOT NULL AND o.status<>'cancelled'
             ORDER BY o.product_id,o.created_at DESC,o.id DESC
           ) latest
-          WHERE latest.status<>'delivered' OR latest.delivered_at + INTERVAL '30 days' >= NOW()
+          WHERE latest.status<>'delivered' OR COALESCE(latest.subscription_expires_at,latest.delivered_at + latest.duration_days * INTERVAL '1 day') >= NOW()
           ORDER BY latest.created_at DESC,latest.id DESC
         """,tg_id)
         return [dict(row) for row in rows]
@@ -388,11 +393,11 @@ async def active_courses(tg_id: int):
 async def renewable_orders(tg_id: int, limit: int = 10):
     async with db.acquire() as c:
         rows=await c.fetch("""
-          SELECT o.id,o.product_id,o.status,o.paid_at,o.delivered_at,p.title AS product_title,
-                 CEIL(EXTRACT(EPOCH FROM (o.delivered_at + INTERVAL '30 days' - NOW()))/86400.0)::int AS days_remaining
+          SELECT o.id,o.product_id,o.status,o.paid_at,o.delivered_at,COALESCE(o.product_snapshot->>'title',p.title) AS product_title,
+                 CEIL(EXTRACT(EPOCH FROM (COALESCE(o.subscription_expires_at,o.delivered_at + o.duration_days * INTERVAL '1 day') - NOW()))/86400.0)::int AS days_remaining
           FROM orders o JOIN users u ON u.id=o.user_id JOIN products p ON p.id=o.product_id
           WHERE u.telegram_id=$1 AND o.status='delivered' AND o.delivered_at IS NOT NULL
-            AND o.delivered_at + INTERVAL '30 days' <= NOW() + INTERVAL '5 days'
+            AND COALESCE(o.subscription_expires_at,o.delivered_at + o.duration_days * INTERVAL '1 day') <= NOW() + INTERVAL '5 days'
             AND NOT EXISTS (SELECT 1 FROM orders newer WHERE newer.user_id=o.user_id AND newer.product_id=o.product_id
               AND newer.status<>'cancelled' AND (newer.created_at,newer.id)>(o.created_at,o.id))
           ORDER BY o.delivered_at DESC,o.id DESC LIMIT $2
@@ -413,7 +418,7 @@ async def list_sensi_orders(page: int = 1, page_size: int = 10, status: str | No
               OR LOWER(p.title) LIKE '%'||$2||'%')
         """,status,query)
         rows = await c.fetch("""
-          SELECT o.id,o.status,o.amount,o.created_at,o.updated_at,o.payment_method,o.payment_status,o.paid_at,p.title product_title,
+          SELECT o.id,o.status,o.amount,o.created_at,o.updated_at,o.payment_method,o.payment_status,o.paid_at,COALESCE(o.product_snapshot->>'title',p.title) AS product_title,
                  u.id AS customer_id,u.telegram_id,u.name,u.first_name,u.last_name,u.username
           FROM orders o JOIN products p ON p.id=o.product_id JOIN users u ON u.id=o.user_id
           WHERE o.status IN ('awaiting_receipt','paid','needs_info','in_progress','ready')
@@ -439,7 +444,7 @@ async def sensi_dashboard_counts():
             (SELECT COUNT(*) FROM support_messages WHERE direction='customer' AND read_at IS NULL) AS unread,
             (SELECT COUNT(DISTINCT user_id) FROM orders
              WHERE status IN ('paid','needs_info','in_progress','ready')
-                OR (status='delivered' AND delivered_at + INTERVAL '30 days' > NOW())) AS active
+                OR (status='delivered' AND COALESCE(subscription_expires_at,delivered_at + duration_days * INTERVAL '1 day') > NOW())) AS active
         """)
         return dict(row)
 
@@ -449,14 +454,14 @@ async def customer_progress(page: int = 1, page_size: int = 10):
     async with db.acquire() as c:
         total=await c.fetchval("""SELECT COUNT(DISTINCT o.user_id) FROM orders o
           WHERE o.status IN ('paid','needs_info','in_progress','ready')
-             OR (o.status='delivered' AND o.delivered_at + INTERVAL '30 days' > NOW())""")
+             OR (o.status='delivered' AND COALESCE(o.subscription_expires_at,o.delivered_at + o.duration_days * INTERVAL '1 day') > NOW())""")
         rows=await c.fetch("""
-          SELECT DISTINCT ON (u.id) o.*,u.id AS user_id,p.title AS product_title,u.name,u.first_name,
+          SELECT DISTINCT ON (u.id) o.*,u.id AS user_id,COALESCE(o.product_snapshot->>'title',p.title) AS product_title,u.name,u.first_name,
                  u.weight_kg AS current_weight,
                  first_weight.start_weight,
                  (SELECT COUNT(*) FROM orders done WHERE done.user_id=u.id AND done.status='delivered') AS delivered_count,
                  CASE WHEN o.delivered_at IS NULL THEN NULL ELSE
-                   CEIL(EXTRACT(EPOCH FROM (o.delivered_at + INTERVAL '30 days' - NOW()))/86400.0)::int END AS days_remaining
+                   CEIL(EXTRACT(EPOCH FROM (COALESCE(o.subscription_expires_at,o.delivered_at + o.duration_days * INTERVAL '1 day') - NOW()))/86400.0)::int END AS days_remaining
           FROM orders o JOIN products p ON p.id=o.product_id JOIN users u ON u.id=o.user_id
           LEFT JOIN LATERAL (
             SELECT (h.snapshot->>'weight_kg')::numeric AS start_weight
@@ -465,7 +470,7 @@ async def customer_progress(page: int = 1, page_size: int = 10):
             ORDER BY h.created_at,h.id LIMIT 1
           ) first_weight ON TRUE
           WHERE o.status IN ('paid','needs_info','in_progress','ready')
-             OR (o.status='delivered' AND o.delivered_at + INTERVAL '30 days' > NOW())
+             OR (o.status='delivered' AND COALESCE(o.subscription_expires_at,o.delivered_at + o.duration_days * INTERVAL '1 day') > NOW())
           ORDER BY u.id,COALESCE(o.delivered_at,o.created_at) DESC,o.id DESC
           LIMIT $1 OFFSET $2
         """,page_size,offset)
@@ -672,7 +677,7 @@ async def set_zarinpal_authority(order_id:int, authority:str):
 
 async def get_order_by_authority(authority:str):
     async with db.acquire() as c:
-        r=await c.fetchrow("SELECT o.*, p.title AS product_title, u.telegram_id, u.name, u.phone FROM payment_attempts a JOIN orders o ON o.id=a.order_id JOIN products p ON p.id=o.product_id JOIN users u ON u.id=o.user_id WHERE a.authority=$1", authority)
+        r=await c.fetchrow("SELECT o.*, COALESCE(o.product_snapshot->>'title',p.title) AS product_title, u.telegram_id, u.name, u.phone FROM payment_attempts a JOIN orders o ON o.id=a.order_id JOIN products p ON p.id=o.product_id JOIN users u ON u.id=o.user_id WHERE a.authority=$1", authority)
         return dict(r) if r else None
 
 async def submit_receipt(order_id:int, file_id:str, receipt_type:str='photo'):
@@ -688,7 +693,7 @@ async def approve_card_payment(order_id:int, actor:int | dict):
             r=await c.fetchrow("UPDATE orders SET payment_status='paid', status='paid', paid_at=COALESCE(paid_at,NOW()), updated_at=NOW() WHERE id=$1 AND payment_method='card_to_card' AND status='awaiting_receipt' RETURNING id",order_id)
             if not r: return None
             await _write_audit(c, actor, 'approve_card_payment', 'order', order_id)
-            full=await c.fetchrow("SELECT o.*,p.code AS product_code,p.title AS product_title,u.telegram_id,u.name,u.phone FROM orders o JOIN products p ON p.id=o.product_id JOIN users u ON u.id=o.user_id WHERE o.id=$1",order_id)
+            full=await c.fetchrow("SELECT o.*,p.code AS product_code,COALESCE(o.product_snapshot->>'title',p.title) AS product_title,u.telegram_id,u.name,u.phone FROM orders o JOIN products p ON p.id=o.product_id JOIN users u ON u.id=o.user_id WHERE o.id=$1",order_id)
             return dict(full) if full else None
 
 async def reject_card_payment(order_id:int, actor:int | dict):
@@ -697,7 +702,7 @@ async def reject_card_payment(order_id:int, actor:int | dict):
             r=await c.fetchrow("UPDATE orders SET payment_status='rejected', status='payment_rejected', updated_at=NOW() WHERE id=$1 AND payment_method='card_to_card' AND status='awaiting_receipt' RETURNING id",order_id)
             if not r: return None
             await _write_audit(c, actor, 'reject_card_payment', 'order', order_id)
-            full=await c.fetchrow("SELECT o.*,p.code AS product_code,p.title AS product_title,u.telegram_id,u.name,u.phone FROM orders o JOIN products p ON p.id=o.product_id JOIN users u ON u.id=o.user_id WHERE o.id=$1",order_id)
+            full=await c.fetchrow("SELECT o.*,p.code AS product_code,COALESCE(o.product_snapshot->>'title',p.title) AS product_title,u.telegram_id,u.name,u.phone FROM orders o JOIN products p ON p.id=o.product_id JOIN users u ON u.id=o.user_id WHERE o.id=$1",order_id)
             return dict(full) if full else None
 
 async def mark_zarinpal_paid(order_id:int, ref:str):
@@ -738,7 +743,7 @@ async def purchaser_report(limit: int = 1000):
                    u.age,u.gender,u.height_cm,u.weight_kg,u.goal,u.training_history,
                    u.food_allergy,u.food_restriction,u.supplements,u.notes,
                    o.id AS order_id,o.amount,o.status,o.payment_method,o.paid_at,
-                   p.title AS product_title
+                   COALESCE(o.product_snapshot->>'title',p.title) AS product_title
             FROM users u
             JOIN orders o ON o.user_id=u.id
             JOIN products p ON p.id=o.product_id
@@ -769,7 +774,7 @@ async def monthly_sales_items(year: int, month: int, page: int = 1, page_size: i
         total=await c.fetchval("""SELECT COUNT(*) FROM orders WHERE paid_at >= make_date($1,$2,1)
           AND paid_at < (make_date($1,$2,1) + INTERVAL '1 month')""",year,month)
         rows = await c.fetch("""
-            SELECT o.id AS order_id, o.amount, o.paid_at, p.title AS product_title,
+            SELECT o.id AS order_id, o.amount, o.paid_at, COALESCE(o.product_snapshot->>'title',p.title) AS product_title,
                    u.id AS user_id, u.name, u.phone, u.telegram_id
             FROM orders o
             JOIN products p ON p.id=o.product_id
@@ -828,7 +833,7 @@ async def purchaser_list(
                      COALESCE(SUM(o.amount),0) AS total_spend,
                      COUNT(DISTINCT o.product_id) FILTER (WHERE
                        o.status IN ('paid','needs_info','in_progress','ready')
-                       OR (o.status='delivered' AND o.delivered_at + INTERVAL '30 days' > NOW())
+                       OR (o.status='delivered' AND COALESCE(o.subscription_expires_at,o.delivered_at + o.duration_days * INTERVAL '1 day') > NOW())
                      ) AS active_courses
               FROM matched_users u JOIN orders o ON o.user_id=u.id
               WHERE o.paid_at IS NOT NULL
@@ -855,7 +860,7 @@ async def purchaser_detail(user_id: int):
         user = await c.fetchrow("SELECT * FROM users WHERE id=$1", user_id)
         if not user: return None, []
         orders = await c.fetch("""
-            SELECT o.*, p.title AS product_title, p.code AS product_code
+            SELECT o.*, COALESCE(o.product_snapshot->>'title',p.title) AS product_title, p.code AS product_code
             FROM orders o JOIN products p ON p.id=o.product_id
             WHERE o.user_id=$1
             ORDER BY o.created_at DESC, o.id DESC

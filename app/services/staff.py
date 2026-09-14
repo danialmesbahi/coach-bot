@@ -30,6 +30,8 @@ TEMPLATES = {
 }
 # Fail closed for every authenticated handler, including private media.
 ROUTE_PERMISSIONS = {
+    'catalog':'catalog.manage','catalog_save':'catalog.manage','catalog_archive':'catalog.manage',
+    'catalog_asset':'catalog.manage','catalog_channel':'catalog.manage',
     'session': None, 'logout': None, 'realtime_events': None, 'dashboard': None,
     'staff_profile': None, 'staff_password': None, 'staff_team': 'team', 'staff_audit': 'team',
     'collaboration': 'collaboration', 'followups': 'collaboration', 'followup_seen': 'collaboration',
@@ -49,7 +51,7 @@ def can(actor, permission):
         return True
     if actor.get('role') in {'leader', 'platform'}:
         return True
-    if permission == 'team':
+    if permission in {'team','catalog.manage'}:
         return False
     if permission in {'identity.read', 'collaboration'}:
         return any(can(actor, item) for item in ('customers.read', 'orders.read', 'chats.read'))

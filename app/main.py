@@ -14,6 +14,7 @@ from app.handlers.user import router as user_router
 from app.handlers.edit import router as edit_router
 from app.middlewares.security import RateLimitMiddleware
 from app.services.motivation import run_motivation_loop
+from app.services.fulfillment import router as channel_router, run_fulfillment_loop
 
 settings=get_settings(); bot=Bot(settings.bot_token)
 
@@ -26,7 +27,7 @@ async def build_dispatcher(redis):
     dp.callback_query.middleware(RateLimitMiddleware(redis))
     # Telegram can approve a web login, but exposes no management panel.
     dp['login_redis'] = redis
-    dp.include_router(edit_router); dp.include_router(user_router)
+    dp.include_router(channel_router); dp.include_router(edit_router); dp.include_router(user_router)
     return dp
 
 async def zarinpal_callback(request):
@@ -68,9 +69,7 @@ async def _verify_payment_callback(authority, status):
     paid=await repo.mark_zarinpal_paid(order['id'],result.reference_id or authority)
     if paid:
         await repo.add_audit(order['telegram_id'],'zarinpal_paid','order',order['id'],{'reference_id':result.reference_id})
-        try:
-            await bot.send_message(order['telegram_id'],f"✅ پرداخت سفارش #{order['id']} با موفقیت توسط درگاه تأیید شد.\n\nاطلاعات دوره شما در صف بررسی مربی قرار گرفت. پس از بررسی اطلاعات، طراحی برنامه آغاز می‌شود.")
-        except Exception: logging.getLogger(__name__).exception('payment notifications failed')
+        # The durable fulfillment worker sends the configured response, including on retries.
     return web.Response(text='پرداخت با موفقیت تأیید شد. می‌توانید به ربات برگردید.')
 
 async def _stop_task(task):
@@ -96,7 +95,7 @@ async def run_polling(dp, redis, motivation_task):
 async def run_webhook(dp, redis, motivation_task):
     path='/telegram/webhook'
     webhook_url=settings.public_base_url.rstrip('/') + path
-    await bot.set_webhook(webhook_url, secret_token=settings.webhook_secret, drop_pending_updates=False, max_connections=40)
+    await bot.set_webhook(webhook_url, secret_token=settings.webhook_secret, drop_pending_updates=False, max_connections=40, allowed_updates=dp.resolve_used_update_types())
     app=web.Application()
     app['redis']=redis
     app['payment_slots']=asyncio.Semaphore(4)
@@ -128,10 +127,10 @@ async def main():
     except Exception:
         logging.getLogger(__name__).warning('Could not refresh Telegram command menu',exc_info=True)
     dp=await build_dispatcher(redis)
-    motivation_task=asyncio.create_task(run_motivation_loop(bot),name='motivation-loop')
+    background_tasks=asyncio.gather(run_motivation_loop(bot),run_fulfillment_loop(bot))
     if settings.app_env.lower() == 'production':
-        await run_webhook(dp,redis,motivation_task)
+        await run_webhook(dp,redis,background_tasks)
     else:
-        await run_polling(dp,redis,motivation_task)
+        await run_polling(dp,redis,background_tasks)
 
 if __name__=='__main__': asyncio.run(main())

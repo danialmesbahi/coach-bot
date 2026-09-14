@@ -98,7 +98,7 @@ def test_alembic_supports_offline_migration_validation():
 
 def test_purchase_flow_exposes_progress_and_paginated_orders():
     source=(ROOT/'app/handlers/user.py').read_text(encoding='utf-8')
-    assert "data.get('active_steps')" in source
+    assert "data.get('active_steps'," in source
     assert "page_size=3" in source
 
 

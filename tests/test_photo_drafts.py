@@ -53,7 +53,7 @@ def test_photo_draft_keeps_the_first_six_and_serializes_a_user():
 
 def test_restart_and_photo_replacement_keep_the_short_flow_recoverable():
     source=(Path(__file__).resolve().parents[1] / 'app/handlers/user.py').read_text(encoding='utf-8')
-    assert "active_steps=list(d.get('active_steps') or PURCHASE_STEPS[d['product_code']])" in source
+    assert "active_steps=list(d.get('active_steps',PURCHASE_STEPS.get(d['product_code'],[])))" in source
     assert "F.text=='↩️ بازگشت به عکس‌های قبلی'" in source
     assert 'async def restore_previous_purchase_photos' in source and 'photo_replacing=True' in source
 

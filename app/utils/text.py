@@ -48,7 +48,7 @@ def progress_path(status: str, renewal: bool=False) -> str:
 
 
 def subscription_time_fa(days_remaining) -> str:
-    if days_remaining is None: return 'شروع ۳۰ روز پس از تحویل'
+    if days_remaining is None: return 'شروع اعتبار پس از تحویل'
     days=int(days_remaining)
     if days<0: return f'{abs(days)} روز از پایان گذشته'
     if days==0: return 'امروز به پایان می‌رسد'

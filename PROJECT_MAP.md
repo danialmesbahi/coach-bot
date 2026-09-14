@@ -28,6 +28,7 @@ edit router → customer router (private chats only; no web-login approval)
 | Coach/admin panel, receipt, plan, reports, buyers | `app/webapp.py` | `web/src/components/console-app.tsx`, `app/db/repositories.py` |
 | Profile edit | `app/handlers/edit.py` | `db/repositories.py`, `utils/validation.py` |
 | Payment gateway/callback | `services/payment.py`, `main.py` | `handlers/user.py`, `db/repositories.py` |
+| Configurable products, ready-made delivery, private channel memberships | `catalog_api.py`, `services/catalog.py`, `services/fulfillment.py` | `web/src/components/catalog.tsx`, `docs/PRODUCT_CATALOG.md` |
 | Data/status/reporting | `db/repositories.py` | `schema.sql`, latest Alembic migration |
 | Roles, env, webhook, rate limits | `config.py`, `main.py` | `middlewares/security.py`, `docker-compose.yml` |
 | Staff accounts, password login/reset, permissions, collaboration | `services/staff.py`, `webapp.py` | `web/src/components/staff-panel.tsx`, `docs/STAFF_ACCESS.md`, `tests/test_password_login.py` |

@@ -201,6 +201,7 @@ def _web_order(order: dict) -> dict:
         photos = normalize_photos([snapshot["body_photo_file_id"]])
     snapshot.pop("body_photo_file_id", None)
     result["form_snapshot"] = snapshot
+    result['product_snapshot']=repo._json_object(result.get('product_snapshot'))
     result["photo_count"] = len(photos)
     result.pop("payment_authority", None)
     result.pop("plan_file_id", None)
@@ -293,7 +294,7 @@ async def _sales_items(period: str, page: int, page_size: int = 20):
         async with connection.transaction():
             await connection.execute("SET LOCAL TIME ZONE 'Asia/Tehran'")
             rows = await connection.fetch(f"""
-                SELECT o.id AS order_id,o.amount,o.paid_at,p.title AS product_title,
+                SELECT o.id AS order_id,o.amount,o.paid_at,COALESCE(o.product_snapshot->>'title',p.title) AS product_title,
                        u.id AS user_id,u.name,u.first_name,u.last_name,u.username,
                        COUNT(*) OVER() AS total_count
                 FROM orders o JOIN products p ON p.id=o.product_id JOIN users u ON u.id=o.user_id
@@ -722,6 +723,8 @@ async def order_action(request: web.Request):
     current = await repo.get_order(order_id)
     if not current:
         raise web.HTTPNotFound()
+    if action in {'in_progress','needs_info'} and repo._json_object(current.get('product_snapshot')).get('delivery_mode','manual')!='manual':
+        return response({'error':'automatic_delivery'},409)
     changed = None
     if action == "approve_receipt":
         if current.get("payment_method") != "card_to_card":
@@ -742,6 +745,8 @@ async def order_action(request: web.Request):
         return response({"error": "invalid_transition"}, 409)
     await repo.add_audit(actor, f"web_{action}", "order", order_id, {"message": info.strip()} if action == "needs_info" else {})
     request.app["read_cache"].clear()
+    if action == 'approve_receipt':
+        return response({'ok':True,'notification_queued':True})
     notified = False
     try:
         sent = await request.app["bot"].send_message(current["telegram_id"], message)
@@ -1086,6 +1091,7 @@ async def sales(request: web.Request):
 
 
 async def build_app():
+    from app.catalog_api import routes as catalog_routes
     await db.connect()
     await staff.bootstrap()
     redis = Redis.from_url(settings.redis_url, encoding="utf-8", decode_responses=True)
@@ -1095,6 +1101,7 @@ async def build_app():
     app['password_slots'] = asyncio.Semaphore(2)
     app["bot"] = Bot(settings.bot_token)
     app["upload_slots"] = asyncio.Semaphore(4)
+    app.add_routes(catalog_routes())
     app["avatar_slots"] = asyncio.Semaphore(3)
     app["avatar_cache"] = {}
     app["media_slots"] = asyncio.Semaphore(3)

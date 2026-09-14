@@ -100,7 +100,7 @@ async def home_message(message:Message, actor=None, welcome: bool=False):
         reply_markup=await customer_menu(actor.id),
     )
 
-async def show_products_message(message, edit: bool=False, actor_id: int | None=None):
+async def show_products_message(message, edit: bool=False, actor_id: int | None=None, page: int=1):
     actor_id=actor_id or message.from_user.id
     if not await repo.sales_are_open():
         text='⏸️ فروش دوره‌ها موقتاً بسته است تا سفارش‌های فعلی با دقت رسیدگی شوند. لطفاً کمی بعد دوباره امتحان کن.'
@@ -108,9 +108,10 @@ async def show_products_message(message, edit: bool=False, actor_id: int | None=
         return await _screen(message,text,markup,edit)
     ps=await repo.get_products_for_user(actor_id)
     if ps:
-        text=('🛒 خرید دوره\n\nیکی از سه دوره را انتخاب کن. هر دوره ۳۰ روزه است؛ '
+        text=('🛒 خرید دوره\n\nدورهٔ موردنظرت را انتخاب کن؛ مدت و شرایط هر دوره در توضیحات آن مشخص است. '
               'از ۵ روز مانده به پایان، همان‌جا دکمهٔ تمدید فعال می‌شود.')
-        markup=products_kb(ps)
+        page=max(1,min(page,(len(ps)+9)//10))
+        markup=products_kb(ps[(page-1)*10:page*10],page,(len(ps)+9)//10)
     else:
         text='فعلاً هیچ برنامه‌ای برای خرید فعال نیست. کمی بعد دوباره سر بزن.'
         markup=products_kb([]) if edit else await customer_menu(actor_id)
@@ -273,6 +274,14 @@ async def products(c,state:FSMContext):
     await state.clear()
     await show_products_message(c.message,edit=True,actor_id=c.from_user.id); await c.answer()
 
+
+@router.callback_query(F.data.startswith('products:page:'))
+async def product_page(c,state:FSMContext):
+    try: page=int(c.data.rsplit(':',1)[1])
+    except ValueError: return await c.answer('درخواست نامعتبر است.')
+    await state.clear(); await c.answer()
+    await show_products_message(c.message,edit=True,actor_id=c.from_user.id,page=page)
+
 @router.callback_query(F.data=='active_courses')
 async def active_courses_callback(c,state):
     if not is_customer(c.from_user.id): return await c.answer('دسترسی ندارید.',show_alert=True)
@@ -292,13 +301,13 @@ KEYMAP={'name':'name','phone':'phone','age':'age','gender':'gender','height':'he
 PROFILE_KEYMAP={'allergy':'food_allergy','restriction':'food_restriction'}
 
 
-def purchase_route(code: str, data: dict) -> list[str]:
+def purchase_route(code: str, data: dict, fields=None) -> list[str]:
     refresh={'age','height','weight','notes','body_photo'}
-    return [step for step in PURCHASE_STEPS[code] if step in refresh or not data.get(KEYMAP[step])]
+    return [step for step in (fields if fields is not None else PURCHASE_STEPS.get(code,[])) if step in refresh or not data.get(KEYMAP[step])]
 
 
 def _step_title(data: dict, step: str) -> str:
-    steps=data.get('active_steps') or PURCHASE_STEPS[data['product_code']]
+    steps=data.get('active_steps',PURCHASE_STEPS.get(data['product_code'],[]))
     return f'▫️ مرحله {steps.index(step)+1} از {len(steps)}\n'
 
 async def prompt(state, msg, step):
@@ -377,12 +386,20 @@ async def begin_purchase(message: Message, state: FSMContext, pid: int, actor, r
         previous_photos=normalize_photos(course_photos if course_photos is not None else user.get('body_photo_file_ids'))
         if profile['supplements'] == 'مصرف می‌کنم':
             profile['supplements'] = ''
-        active_steps=purchase_route(str(p['code']),profile)
+        from app.services.catalog import object_value
+        fields=object_value(p['form_fields']) if 'form_fields' in p else None
+        questions=object_value(p.get('questions',[]))
+        active_steps=purchase_route(str(p['code']),profile,fields)
         await state.update_data(
             product_id=int(p['id']),
             product_code=str(p['code']),
             product_title=str(p['title']),
             price=int(p['price_irr']),
+            product_version=p.get('version',1),
+            configured_fields=fields,
+            questions=questions,
+            question_index=0,
+            custom_answers=[],
             body_photo_file_ids=list(previous_photos),
             previous_body_photo_file_ids=list(previous_photos),
             previous_body_photo_count=len(previous_photos),
@@ -391,6 +408,9 @@ async def begin_purchase(message: Message, state: FSMContext, pid: int, actor, r
             renewal_of_order_id=renewal_of_order_id,
             **profile,
         )
+        await message.answer(f"{p['title']}\n\n{p['description']}\n\nمدت: {p.get('duration_days',30)} روز\nمبلغ: {money(p['price_irr'])}")
+        if not active_steps:
+            return await finish_questionnaire(message,state,uid)
         first=active_steps[0]
         await state.set_state(getattr(PurchaseForm, first))
         await prompt(state, message, first)
@@ -408,7 +428,7 @@ async def begin_purchase(message: Message, state: FSMContext, pid: int, actor, r
 async def renew_list(c: CallbackQuery, state: FSMContext):
     if not is_customer(c.from_user.id): return await c.answer('دسترسی ندارید.',show_alert=True)
     await state.clear(); rows=await repo.renewable_orders(c.from_user.id)
-    if not rows: return await c.message.edit_text('فعلاً برنامه‌ای در بازهٔ تمدید نیست. تمدید فقط بعد از تحویل و از ۵ روز مانده به پایان دورهٔ ۳۰روزه فعال می‌شود.',reply_markup=purchase_entry_kb())
+    if not rows: return await c.message.edit_text('فعلاً برنامه‌ای در بازهٔ تمدید نیست. تمدید فقط بعد از تحویل و از ۵ روز مانده به پایان اعتبار دوره فعال می‌شود.',reply_markup=purchase_entry_kb())
     await c.message.edit_text('🔄 تمدید برنامه\n\nبرنامهٔ قبلی را انتخاب کن؛ اطلاعات متغیر مثل سن، قد، وزن و عکس‌ها دوباره گرفته می‌شوند.',reply_markup=renewal_list_kb(rows)); await c.answer()
 
 
@@ -430,7 +450,8 @@ async def start_renewal(message: Message, state: FSMContext, actor, oid: int):
     await begin_purchase(message,state,int(old['product_id']),actor,oid)
 
 async def advance_after(state: FSMContext, msg: Message, current: str):
-    d=await state.get_data(); seq=d.get('active_steps') or PURCHASE_STEPS[d['product_code']]
+    d=await state.get_data(); seq=d.get('active_steps',PURCHASE_STEPS.get(d['product_code'],[]))
+    if current==seq[-1]: return await finish_questionnaire(msg,state)
     nxt=seq[seq.index(current)+1]
     await state.set_state(getattr(PurchaseForm,nxt)); await prompt(state,msg,nxt)
 
@@ -669,11 +690,29 @@ async def finish_photos(m,state):
         d=await state.get_data()
         photos=stored_photos(d.get('body_photo_file_ids'))
         await state.update_data(body_photo_file_ids=photos,photo_adding=False,photo_replacing=False,photo_limit_media_group_id=None)
-        await show_summary(m,state)
+        await finish_questionnaire(m,state)
 
 @router.message(PurchaseForm.body_photo)
 async def body_photo_invalid(m,state):
     await m.answer('❌ ورودی قابل قبول نیست. لطفاً فقط عکس را با گزینهٔ Photo/Gallery بفرست یا «✅ اتمام و ادامه» را بزن.')
+
+async def finish_questionnaire(msg,state,tg_id=None):
+    d=await state.get_data(); questions=d.get('questions',[]); index=d.get('question_index',0)
+    if index<len(questions):
+        await state.set_state(PurchaseForm.custom_question)
+        return await msg.answer(f'📝 {questions[index]}',reply_markup=back_reply_kb())
+    return await show_summary(msg,state,tg_id)
+
+
+@router.message(PurchaseForm.custom_question)
+async def custom_question(m,state):
+    value=clean_text(m.text or '',1000)
+    if not value: return await m.answer('لطفاً پاسخ را به صورت متن بفرست.')
+    d=await state.get_data(); index=d.get('question_index',0); answers=d.get('custom_answers',[])
+    answers.append({'question':d['questions'][index],'answer':value})
+    await state.update_data(custom_answers=answers,question_index=index+1)
+    await finish_questionnaire(m,state)
+
 
 async def show_summary(msg,state,tg_id: int | None=None):
     d=await state.get_data(); code=d['product_code']; ids=d.get('body_photo_file_ids',[])
@@ -681,19 +720,31 @@ async def show_summary(msg,state,tg_id: int | None=None):
     if code in ('nutrition','complete'): text+=f"حساسیت: {d.get('allergy','-')}\nمحدودیت: {d.get('restriction','-')}\nمکمل: {d.get('supplements','-')}\n"
     if code in ('training','complete'): text+=f"هدف: {d.get('goal','-')}\nسابقه تمرین: {d.get('training_history','-')}\n"
     text+=f"توضیحات: {d.get('notes') or '-'}\nعکس بدن: {len(ids)} عدد\n\nمبلغ: {money(d['price'])}"
+    if d.get('configured_fields') is not None:
+        labels={'name':'نام','phone':'تلفن','age':'سن','gender':'جنسیت','height':'قد','weight':'وزن','allergy':'حساسیت','restriction':'محدودیت غذایی','supplements':'مکمل','goal':'هدف','training_history':'سابقه تمرین','notes':'توضیحات','body_photo':'عکس‌ها'}
+        details=[f"{labels[field]}: {len(ids) if field=='body_photo' else d.get(KEYMAP[field]) or '-'}" for field in d['configured_fields']]
+        details.extend(f"{a['question']}: {a['answer']}" for a in d.get('custom_answers',[]))
+        text=f"📋 بررسی اطلاعات سفارش\n\n{d['product_title']}\n"+'\n'.join(details)+f"\n\nمبلغ: {money(d['price'])}"
     await state.update_data(photo_prompt_message_id=None)
     await state.set_state(PurchaseForm.confirm)
     await msg.answer('⏳ در حال پردازش اطلاعات…',reply_markup=await customer_menu(tg_id or msg.from_user.id))
-    await msg.answer(text,reply_markup=confirm_kb())
+    parts=split_message(text)
+    for part in parts[:-1]: await msg.answer(part)
+    await msg.answer(parts[-1],reply_markup=confirm_kb())
 
 @router.callback_query(PurchaseForm.confirm,F.data=='restart_form')
 async def restart(c,state):
     d=await state.get_data()
-    active_steps=list(d.get('active_steps') or PURCHASE_STEPS[d['product_code']])
+    active_steps=list(d.get('active_steps',PURCHASE_STEPS.get(d['product_code'],[])))
     keep={k:d.get(k) for k in ('product_id','product_code','product_title','price','renewal_of_order_id','name','phone','age','gender','height_cm','weight_kg','allergy','restriction','supplements','goal','training_history','notes')}
     previous=normalize_photos(d.get('previous_body_photo_file_ids'))
+    keep.update({k:d.get(k) for k in ('product_version','configured_fields','questions')})
     await state.clear()
     await state.update_data(**keep,body_photo_file_ids=previous,previous_body_photo_file_ids=previous,photo_collecting=not bool(previous),active_steps=active_steps)
+    await state.update_data(question_index=0,custom_answers=[])
+    if not active_steps:
+        await c.answer()
+        return await finish_questionnaire(c.message,state,c.from_user.id)
     first=active_steps[0]
     await state.set_state(getattr(PurchaseForm,first)); await prompt(state,c.message,first); await c.answer()
 
@@ -702,12 +753,14 @@ async def confirm(c,state):
     if not is_customer(c.from_user.id):return await c.answer('دسترسی ندارید.',show_alert=True)
     settings=get_settings()
     await state.set_state(PurchaseForm.payment_method)
-    await c.message.edit_text('💳 روش پرداخت رو انتخاب کن\n\nبعد از پرداخت، سفارش مستقیم برای مربی ارسال می‌شه.',reply_markup=payment_methods_kb(settings.payment_mode.lower()))
+    await c.message.edit_text('💳 روش پرداخت رو انتخاب کن\n\nبعد از تأیید پرداخت، سفارش مطابق شرایط دوره پردازش می‌شود.',reply_markup=payment_methods_kb(settings.payment_mode.lower()))
     await c.answer()
 
 @router.callback_query(PurchaseForm.confirm,F.data=='form_back')
 async def form_back_from_confirm(c,state):
-    d=await state.get_data(); await state.set_state(PurchaseForm.body_photo); await prompt(state,c.message,'body_photo'); await c.answer()
+    d=await state.get_data(); steps=d.get('active_steps',[]); await c.answer()
+    if not steps: return await finish_questionnaire(c.message,state,c.from_user.id)
+    await state.set_state(getattr(PurchaseForm,steps[-1])); await prompt(state,c.message,steps[-1])
 
 @router.callback_query(PurchaseForm.payment_method,F.data=='payment_back')
 async def payment_back(c,state):
@@ -727,7 +780,13 @@ async def choose_payment(c,state):
     await c.answer('⏳ در حال ثبت سفارش…')
     d=await state.get_data(); p=await repo.get_product(d['product_id'])
     if not p or not p['active']:return await c.message.answer('❌ این محصول دیگه فعال نیست؛ یک برنامهٔ دیگه انتخاب کن.')
+    if p.get('version',1)!=d.get('product_version',1):
+        await state.clear()
+        return await c.message.answer('شرایط دوره تغییر کرده است؛ لطفاً دوباره دوره را انتخاب و شرایط جدید را تأیید کن.')
     snapshot={k:d.get(k) for k in ('name','phone','age','gender','height_cm','weight_kg','allergy','restriction','supplements','goal','training_history','notes','body_photo_file_ids')}
+    if d.get('configured_fields') is not None:
+        snapshot={KEYMAP[field]:d.get(KEYMAP[field]) for field in d['configured_fields']}
+    snapshot['custom_answers']=d.get('custom_answers',[])
     await state.set_state(PurchaseForm.submitting)
     db_method='card_to_card' if method=='card' else method
     try: order=await repo.create_order(c.from_user.id,p,snapshot,db_method,d.get('renewal_of_order_id'))
@@ -744,7 +803,7 @@ async def choose_payment(c,state):
         paid=await repo.mark_mock_payment(order['id'],f"mock:{order['id']}")
         await state.clear()
         if not paid:return await c.message.answer('❌ پرداخت آزمایشی ثبت نشد؛ از سفارش‌های من دوباره تلاش کن.')
-        return await c.message.answer(f"✅ پرداخت آزمایشی سفارش {order_code(order['id'])} ثبت شد.\n\nمربی از سفارش باخبر شد و طراحی برنامه شروع می‌شه.",reply_markup=await customer_menu(c.from_user.id))
+        return await c.message.answer(f"✅ پرداخت آزمایشی سفارش {order_code(order['id'])} ثبت شد.\n\nسفارش مطابق شرایط دوره پردازش می‌شود.",reply_markup=await customer_menu(c.from_user.id))
     try:
         pay=await payment.create_zarinpal(order['id'],p['price_irr'],p['title'])
         if not pay.success: raise RuntimeError(pay.message)
@@ -808,7 +867,9 @@ async def back(m,state):
     if name == 'receipt':
         oid=d.get('order_id'); await state.clear()
         return await m.answer(f'سفارش #{oid} ذخیره شده و هنوز پرداخت نشده.',reply_markup=pending_order_kb(oid))
-    if name == 'confirm': prev='body_photo'
+    if name == 'confirm':
+        if not order: return await show_products_message(m)
+        prev=order[-1]
     elif name == 'payment_method': prev='confirm'
     else:
         if name not in order:return await home_message(m)
@@ -976,11 +1037,9 @@ async def get_plan(c,state:FSMContext):
     try:oid=int(c.data.split(':')[2])
     except (ValueError,IndexError):return await c.answer('درخواست نامعتبر.',show_alert=True)
     o=await repo.get_user_order(oid,c.from_user.id)
-    if not o or not o.get('plan_file_id'):return await c.answer('برنامه هنوز آماده نیست.',show_alert=True)
-    if o.get('plan_type')=='photo': await c.bot.send_photo(c.from_user.id,o['plan_file_id'],caption=f'📥 برنامه سفارش #{oid}',protect_content=True)
-    else: await c.bot.send_document(c.from_user.id,o['plan_file_id'],caption=f'📥 برنامه سفارش #{oid}',protect_content=True)
-    if o.get('status')=='ready': await repo.update_order_status(oid,'delivered')
+    if not o:return await c.answer('سفارش پیدا نشد.',show_alert=True)
     await c.answer()
+    await send_plan_to_customer(c.message,c.from_user.id,oid)
 
 
 @router.callback_query(F.data.startswith('order:pay:'))
@@ -1129,6 +1188,14 @@ async def show_order_detail_message(m: Message, tg_id: int, oid: int, active_cou
 
 async def send_plan_to_customer(m: Message, tg_id: int, oid: int):
     o=await repo.get_user_order(oid,tg_id)
+    if o and o.get('paid_at') and o.get('status')=='delivered':
+        terms=repo._json_object(o.get('product_snapshot'))
+        if terms.get('delivery_mode')=='channel':
+            from app.services.fulfillment import channel_link
+            link=await channel_link(m.bot,oid,tg_id)
+            return await m.answer(f'ورود به کانال (فقط برای همین حساب):\n{link}' if link else 'اعتبار این اشتراک به پایان رسیده است؛ برای ادامه دوره را تمدید کن.')
+        if terms.get('delivery_mode')=='content' and not o.get('plan_file_id'):
+            return await m.answer((terms.get('response_text') or 'محتوای خریداری‌شده:')+'\n\n'+terms.get('content_url',''))
     if not o or not o.get('plan_file_id'):
         return await m.answer('برنامه هنوز آماده نیست یا به حساب شما تعلق ندارد.')
     if o.get('plan_type')=='photo':

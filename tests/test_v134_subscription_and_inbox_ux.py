@@ -26,9 +26,9 @@ def test_inbox_badge_and_silent_draft_capture():
     assert "فقط عکس تلگرام را می‌پذیرد" in user
 
 
-def test_subscription_queries_enforce_thirty_days_and_five_day_window():
+def test_subscription_queries_use_purchased_duration_and_five_day_window():
     repo=(ROOT/'app/db/repositories.py').read_text(encoding='utf-8')
-    assert "INTERVAL '30 days'" in repo
+    assert "duration_days * INTERVAL '1 day'" in repo
     assert "INTERVAL '5 days'" in repo
     assert "old.status='delivered'" in repo
     assert "(newer.created_at,newer.id)>(old.created_at,old.id)" in repo

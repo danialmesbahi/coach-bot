@@ -1,5 +1,5 @@
 export type Role = "platform" | "leader" | "staff";
-export type View = "dashboard" | "followups" | "orders" | "messages" | "customers" | "sales";
+export type View = "dashboard" | "followups" | "orders" | "messages" | "customers" | "sales" | "catalog";
 export type Lang = "fa" | "en";
 export type SalesPeriod = "day" | "week" | "month" | "all";
 
@@ -51,6 +51,8 @@ export interface ProductOption { id: number; title: string }
 export interface CustomerPage extends PageResult<CustomerListItem> { products: ProductOption[] }
 
 export interface OrderListItem {
+  duration_days?: number;
+  subscription_expires_at?: string | null;
   id: number;
   customer_id?: number;
   user_id?: number;
@@ -70,6 +72,8 @@ export interface OrderListItem {
 }
 
 export interface OrderDetail extends OrderListItem {
+  product_snapshot?: {delivery_mode?: string};
+  fulfillment_error?: string | null;
   amount: number | string;
   phone?: string;
   paid_at?: string;

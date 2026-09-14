@@ -12,6 +12,8 @@ This is a production-oriented Telegram bot for **one Sensi / coach only**. The b
 
 The bot runs on one server and one database. There is exactly one Sensi per bot.
 
+Catalog update: the three products above are initial data, not a fixed catalog. Leaders/platform accounts can manage custom programs, ready-made content and private-channel subscriptions. `docs/PRODUCT_CATALOG.md` defines current product, duration, form and delivery behavior. Purchase terms are snapshotted; archiving never deletes purchase history.
+
 ## Roles
 
 Web-panel update: the current web roles are **platform**, **leader** and **staff**, stored in PostgreSQL. Platform manages all levels; leader manages staff only; staff has explicit capabilities. `docs/STAFF_ACCESS.md` supersedes the historical web-role restrictions below. `Settings.role()` and the descriptions below remain historical bot compatibility, not web API authorization. Never use environment role checks to authorize staff API/media/SSE requests.

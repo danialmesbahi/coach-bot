@@ -108,7 +108,7 @@ def test_zarinpal_callback_verifies_before_routing_to_information_review(monkeyp
     assert asyncio.run(main.zarinpal_callback(request)).status == 200
     verify.assert_awaited_once_with("test-authority",499000)
     mark.assert_awaited_once_with(42,"verified-42")
-    assert "صف بررسی" in bot.send_message.await_args.args[1]
+    bot.send_message.assert_not_awaited()  # Durable worker uses the purchased delivery mode.
     verify.return_value = SimpleNamespace(success=False)
     mark.reset_mock()
     assert asyncio.run(main.zarinpal_callback(request)).status == 400
