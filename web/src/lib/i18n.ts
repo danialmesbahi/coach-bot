@@ -1,7 +1,7 @@
 import type { Lang } from "./types";
 
 const fa = {
-  dashboard:"نمای کلی", orders:"کارها", messages:"پیام‌ها", customers:"شاگردها", sales:"فروش",
+  dashboard:"نمای کلی", followups:"پیگیری‌های من", orders:"کارها", messages:"پیام‌ها", customers:"شاگردها", sales:"فروش",
   connected:"متصل و همگام", connecting:"در حال همگام‌سازی", offline:"آفلاین", logout:"خروج امن",
   overview:"تصویر روشن از وضعیت امروز", activeCustomers:"شاگرد فعال", usersCount:"تعداد کاربران", salesTrend:"روند فروش",
   day:"روز", week:"هفته", month:"ماه", all:"کل", quickActions:"اقدام‌های سریع",
@@ -31,7 +31,7 @@ const fa = {
 } as const;
 
 const en: Record<keyof typeof fa, string> = {
-  dashboard:"Overview",orders:"Work queue",messages:"Messages",customers:"Clients",sales:"Revenue",
+  dashboard:"Overview",followups:"My follow-ups",orders:"Work queue",messages:"Messages",customers:"Clients",sales:"Revenue",
   connected:"Connected and synced",connecting:"Syncing",offline:"Offline",logout:"Secure logout",overview:"A clear view of today",
   activeCustomers:"Active clients",usersCount:"Total users",salesTrend:"Revenue trend",day:"Day",week:"Week",month:"Month",all:"All time",
   quickActions:"Quick actions",salesOpen:"Sales are open",salesClosed:"Sales are paused",closeSales:"Pause sales",openSales:"Open sales",

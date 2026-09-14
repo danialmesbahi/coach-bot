@@ -1,5 +1,5 @@
 export type Role = "platform" | "leader" | "staff";
-export type View = "dashboard" | "orders" | "messages" | "customers" | "sales";
+export type View = "dashboard" | "followups" | "orders" | "messages" | "customers" | "sales";
 export type Lang = "fa" | "en";
 export type SalesPeriod = "day" | "week" | "month" | "all";
 

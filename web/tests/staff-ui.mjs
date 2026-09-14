@@ -139,7 +139,7 @@ try {
     assert.match(await profileNotes.getAttribute('aria-label'),/team notes/i);
     await profileNotes.click();
     await page.locator('.profile-dialog .collaboration-assignment').waitFor();
-    await page.getByText('Call tomorrow',{exact:true}).waitFor();
+    await page.locator('.profile-dialog').getByText('Call tomorrow',{exact:true}).waitFor();
     await page.locator('.profile-dialog .drawer-mobile-back').click();
     await page.locator('.chat-shell').waitFor();
     const chatNotes=page.locator('.chat-notes-dock .collaboration-panel summary');
@@ -151,7 +151,9 @@ try {
     assert.ok(notesBox&&headerBox&&notesBox.y>=headerBox.y+headerBox.height,'team notes must stay outside the drawer header controls');
     await page.locator('.chat-dialog').evaluate(el=>el.close());
     await page.getByRole('button',{name:'My follow-ups'}).click();
-    await page.getByRole('button',{name:'Client profile: Test client'}).waitFor();
+    await page.getByRole('button',{name:'Open follow-up: Client profile, Test client'}).click();
+    await page.locator('.profile-dialog .collaboration-panel[open]').waitFor();
+    await page.locator('.profile-dialog').getByText('Call tomorrow',{exact:true}).waitFor();
     await page.close();
   }
   assert.deepEqual(errors,[]);
