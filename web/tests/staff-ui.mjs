@@ -114,6 +114,7 @@ try {
   }
   {
     const page=await browser.newPage({viewport:{width:390,height:844}});
+    let followupSeen=false;
     page.on('pageerror',error=>errors.push(error.message));
     await page.addInitScript(()=>localStorage.setItem('sensi-lang','en'));
     await page.route('**/api/**',async route=>{
@@ -122,13 +123,14 @@ try {
       const fixtures={
         '/api/session':session,
         '/api/threads':{items:[{user_id:9,name:'Test client',username:'client',message_count:1,unread_count:0,last_content_text:'Hello'}],total:1,page:1,pageSize:25,counts:{all:1,unread_threads:0,unread_messages:0,assigned:1}},
-        '/api/followups':{items:[{target_type:'customer',target_id:9,user_id:9,name:'Test client',username:'client',note_body:'Call tomorrow',note_author:'Support teammate',updated_at:'2026-09-13T10:00:00Z'}],total:1,page:1,pageSize:20,counts:{all:1,unread_threads:0,unread_messages:0,assigned:1}},
+        '/api/followups':{items:[{target_type:'customer',target_id:9,user_id:9,name:'Test client',username:'client',note_body:'Call tomorrow',note_author:'Support teammate',seen_at:followupSeen?'2026-09-13T10:01:00Z':null,updated_at:'2026-09-13T10:00:00Z'}],total:1,page:1,pageSize:20,counts:{all:1,unread_threads:0,unread_messages:0,assigned:followupSeen?0:1},followupCounts:{all:1,unseen:followupSeen?0:1,seen:followupSeen?1:0}},
         '/api/threads/9':{user:{id:9,telegram_id:9009,name:'Test client',username:'client'},items:[{id:1,direction:'customer',content_text:'Hello',content_type:'text',created_at:'2026-09-13T10:00:00Z'}]},
         '/api/customers/9':{user:{id:9,telegram_id:9009,name:'Test client',username:'client',created_at:'2026-09-13T10:00:00Z',photo_count:0},orders:[],history:[],messages:[]},
         '/api/collaboration/thread/9':{assignment:{staff_id:null,version:1},notes:[{id:1,author_name:'Support teammate',body:'Call tomorrow',created_at:'2026-09-13T10:00:00Z'}],members:[]},
         '/api/collaboration/customer/9':{assignment:{staff_id:1,version:1},notes:[{id:1,author_name:'Support teammate',body:'Call tomorrow',created_at:'2026-09-13T10:00:00Z'}],members:[]},
       };
       if(path==='/api/events')return route.fulfill({status:200,contentType:'text/event-stream',body:': test\n\n'});
+      if(path==='/api/followups/customer/9/seen'){followupSeen=true;return route.fulfill({status:200,contentType:'application/json',body:'{"ok":true}'});}
       await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(fixtures[path]??{ok:true})});
     });
     await page.goto(`${process.env.TEST_BASE_URL || 'http://127.0.0.1:8090'}/messages`);
@@ -154,6 +156,10 @@ try {
     await page.getByRole('button',{name:'Open follow-up: Client profile, Test client'}).click();
     await page.locator('.profile-dialog .collaboration-panel[open]').waitFor();
     await page.locator('.profile-dialog').getByText('Call tomorrow',{exact:true}).waitFor();
+    await page.locator('.profile-dialog').evaluate(el=>el.close());
+    await page.locator('.followup-card.seen').waitFor();
+    assert.equal(await page.getByRole('button',{name:'Unread'}).count(),1);
+    assert.equal(await page.getByRole('button',{name:'Oldest'}).count(),1);
     await page.close();
   }
   assert.deepEqual(errors,[]);

@@ -32,7 +32,7 @@ TEMPLATES = {
 ROUTE_PERMISSIONS = {
     'session': None, 'logout': None, 'realtime_events': None, 'dashboard': None,
     'staff_profile': None, 'staff_password': None, 'staff_team': 'team', 'staff_audit': 'team',
-    'collaboration': 'collaboration', 'followups': 'collaboration',
+    'collaboration': 'collaboration', 'followups': 'collaboration', 'followup_seen': 'collaboration',
     'sales_gate': 'sales.manage', 'sales': 'sales.read',
     'orders': 'orders.read', 'order_detail': 'records.read', 'order_action': 'orders.read',
     'upload_plan': 'orders.deliver', 'order_body_photo': 'records.read',

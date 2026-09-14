@@ -120,10 +120,11 @@ export interface FollowUpItem {
   note_body?:string;
   note_author?:string;
   note_created_at?:string;
+  seen_at?:string|null;
   updated_at:string;
 }
 
-export interface FollowUpPage extends PageResult<FollowUpItem> { counts:ThreadPage["counts"] }
+export interface FollowUpPage extends PageResult<FollowUpItem> { counts:ThreadPage["counts"]; followupCounts:{all:number;unseen:number;seen:number} }
 
 export interface MessageItem {
   id: number;

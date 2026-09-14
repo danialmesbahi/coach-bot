@@ -161,3 +161,24 @@ def test_customer_reader_can_leave_and_claim_profile_followup(monkeypatch):
         {'staff_id': 4, 'version': 2, 'display_name': 'Designer'},
     ]
     assert asyncio.run(webapp.collaboration(Request({'action': 'assign', 'staff_id': 4, 'version': 1}))).status == 200
+
+
+def test_followup_seen_only_updates_current_assignee(monkeypatch):
+    from contextlib import asynccontextmanager
+    connection = SimpleNamespace(fetchval=AsyncMock(side_effect=[9, None]))
+
+    @asynccontextmanager
+    async def acquire():
+        yield connection
+
+    class Request(dict):
+        match_info = {'kind': 'thread', 'target_id': '9'}
+
+        def __init__(self):
+            super().__init__(actor=dict(role='staff', staff_id=4, permissions=['chats.read']))
+
+    monkeypatch.setattr(webapp.db, 'acquire', acquire)
+    assert asyncio.run(webapp.followup_seen(Request())).status == 200
+    assert connection.fetchval.await_args.args[-1] == 4
+    with pytest.raises(web.HTTPNotFound):
+        asyncio.run(webapp.followup_seen(Request()))

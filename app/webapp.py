@@ -511,6 +511,7 @@ async def collaboration(request):
                 if not isinstance(text, str) or not 1 <= len(text.strip()) <= 2000:
                     return response({'error': 'invalid_note'}, 400)
                 await c.execute('INSERT INTO staff_notes(target_type,target_id,staff_id,author_name,body) VALUES($1,$2,$3,$4,$5)', kind, target_id, actor['staff_id'], actor['display_name'], text.strip())
+                await c.execute('UPDATE staff_assignments SET seen_at=CASE WHEN staff_id=$3 THEN NOW() ELSE NULL END,updated_at=NOW() WHERE target_type=$1 AND target_id=$2',kind,target_id,actor['staff_id'])
                 await staff.audit(c, actor, 'internal_note', kind, target_id)
             elif body.get('action') == 'assign':
                 staff.require(actor, {'thread':'chats.reply','customer':'customers.read','order':'orders.review'}[kind])
@@ -527,7 +528,7 @@ async def collaboration(request):
                 current = await c.fetchrow('SELECT * FROM staff_assignments WHERE target_type=$1 AND target_id=$2 FOR UPDATE', kind, target_id)
                 if body.get('version', 1) != current['version'] or actor['role'] == 'staff' and current['staff_id'] not in {None, actor['staff_id']}:
                     return response({'error': 'assignment_changed'}, 409)
-                await c.execute('UPDATE staff_assignments SET staff_id=$3,version=version+1,updated_at=NOW() WHERE target_type=$1 AND target_id=$2', kind, target_id, assignee)
+                await c.execute('UPDATE staff_assignments SET staff_id=$3,seen_at=NULL,version=version+1,updated_at=NOW() WHERE target_type=$1 AND target_id=$2', kind, target_id, assignee)
                 await staff.audit(c, actor, 'assigned', kind, target_id, {'staff_id': assignee})
             else:
                 return response({'error': 'invalid_action'}, 400)
@@ -816,10 +817,24 @@ async def threads(request: web.Request):
 
 async def followups(request: web.Request):
     actor=request['actor']; page=_safe_page(request)
+    state=request.query.get('state','all'); sort=request.query.get('sort','newest')
+    if state not in {'all','unseen','seen'} or sort not in {'newest','oldest'}:
+        return response({'error':'invalid_filter'},400)
     kinds=[kind for kind,permission in {'thread':'chats.read','customer':'customers.read','order':'orders.read'}.items() if staff.can(actor,permission)]
-    rows,total=await repo.staff_followups(actor['staff_id'],kinds,page,20,request.query.get('q',''))
+    rows,total,followup_counts=await repo.staff_followups(actor['staff_id'],kinds,page,20,request.query.get('q',''),state,sort)
     counts=await repo.support_thread_counts(actor['staff_id'],kinds)
-    return response({'items':rows,'total':total,'page':page,'pageSize':20,'counts':counts})
+    return response({'items':rows,'total':total,'page':page,'pageSize':20,'counts':counts,'followupCounts':followup_counts})
+
+
+async def followup_seen(request: web.Request):
+    actor=request['actor']; kind=request.match_info['kind']; target_id=int(request.match_info['target_id'])
+    staff.require(actor,{'thread':'chats.read','customer':'customers.read','order':'orders.read'}[kind])
+    async with db.acquire() as c:
+        changed=await c.fetchval('''UPDATE staff_assignments SET seen_at=NOW() WHERE target_type=$1 AND target_id=$2 AND staff_id=$3
+            RETURNING target_id''',kind,target_id,actor['staff_id'])
+    if changed is None:
+        raise web.HTTPNotFound()
+    return response({'ok':True})
 
 
 async def thread_detail(request: web.Request):
@@ -1098,7 +1113,7 @@ async def build_app():
             web.post("/api/staff/password", staff_password), web.post("/api/logout", logout), web.get("/api/session", session),
             web.get("/api/dashboard", dashboard), web.post("/api/sales-gate", sales_gate), web.get("/api/orders", orders), web.get("/api/orders/{order_id:\\d+}", order_detail),
             web.post("/api/orders/{order_id:\\d+}/action", order_action), web.post("/api/orders/{order_id:\\d+}/plan", upload_plan),
-            web.get("/api/threads", threads), web.get("/api/followups", followups), web.get("/api/threads/{user_id:\\d+}", thread_detail), web.post("/api/threads/{user_id:\\d+}/reply", reply_message),
+            web.get("/api/threads", threads), web.get("/api/followups", followups), web.post('/api/followups/{kind:thread|customer|order}/{target_id:\\d+}/seen',followup_seen), web.get("/api/threads/{user_id:\\d+}", thread_detail), web.post("/api/threads/{user_id:\\d+}/reply", reply_message),
             web.get("/api/customers", customers), web.get("/media/customers/{user_id:\\d+}/avatar", customer_avatar), web.get("/media/customers/{user_id:\\d+}/photos/{index:\\d+}", customer_body_photo), web.get("/api/customers/{user_id:\\d+}", customer_detail),
             web.get("/media/orders/{order_id:\\d+}/photos/{index:\\d+}", order_body_photo), web.get("/media/orders/{order_id:\\d+}/receipt", order_receipt), web.get("/media/messages/{message_id:\\d+}", support_message_media), web.get("/api/sales", sales), web.get("/api/events", realtime_events),
         ]
