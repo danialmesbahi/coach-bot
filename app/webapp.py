@@ -1092,16 +1092,21 @@ async def sales(request: web.Request):
 
 async def build_app():
     from app.catalog_api import routes as catalog_routes
+    from app.analytics_api import analytics, client_error
+    from app.services.telemetry import web_metrics, run_telemetry_loop
     await db.connect()
     await staff.bootstrap()
     redis = Redis.from_url(settings.redis_url, encoding="utf-8", decode_responses=True)
     await redis.ping()
-    app = web.Application(middlewares=[security_headers, errors, auth], client_max_size=(settings.max_plan_file_mb + 1) * 1024 * 1024)
+    app = web.Application(middlewares=[security_headers, web_metrics, errors, auth], client_max_size=(settings.max_plan_file_mb + 1) * 1024 * 1024)
     app["redis"] = redis
     app['password_slots'] = asyncio.Semaphore(2)
     app["bot"] = Bot(settings.bot_token)
     app["upload_slots"] = asyncio.Semaphore(4)
     app.add_routes(catalog_routes())
+    app.router.add_get('/api/analytics', analytics)
+    app.router.add_post('/api/analytics/client-error',client_error)
+    app['telemetry_task'] = asyncio.create_task(run_telemetry_loop('web'),name='web-telemetry')
     app["avatar_slots"] = asyncio.Semaphore(3)
     app["avatar_cache"] = {}
     app["media_slots"] = asyncio.Semaphore(3)
@@ -1127,6 +1132,11 @@ async def build_app():
     )
 
     async def cleanup(_):
+        app['telemetry_task'].cancel()
+        try:
+            await app['telemetry_task']
+        except asyncio.CancelledError:
+            pass
         app["realtime_task"].cancel()
         try:
             await app["realtime_task"]

@@ -26,6 +26,7 @@ edit router → customer router (private chats only; no web-login approval)
 |---|---|---|
 | Customer menu, purchase, form, profile, order, support | `app/handlers/user.py` | `keyboards.py`, `states/forms.py`, `db/repositories.py` |
 | Coach/admin panel, receipt, plan, reports, buyers | `app/webapp.py` | `web/src/components/console-app.tsx`, `app/db/repositories.py` |
+| KPIs, personal/platform analytics, technical counters | `app/analytics_api.py`, `docs/ANALYTICS.md` | `app/services/telemetry.py`, `web/src/components/analytics.tsx`, `tests/test_analytics.py` |
 | Profile edit | `app/handlers/edit.py` | `db/repositories.py`, `utils/validation.py` |
 | Payment gateway/callback | `services/payment.py`, `main.py` | `handlers/user.py`, `db/repositories.py` |
 | Configurable products, ready-made delivery, private channel memberships | `catalog_api.py`, `services/catalog.py`, `services/fulfillment.py` | `web/src/components/catalog.tsx`, `docs/PRODUCT_CATALOG.md` |

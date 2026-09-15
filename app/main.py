@@ -15,6 +15,7 @@ from app.handlers.edit import router as edit_router
 from app.middlewares.security import RateLimitMiddleware
 from app.services.motivation import run_motivation_loop
 from app.services.fulfillment import router as channel_router, run_fulfillment_loop
+from app.services.telemetry import BotMetrics, run_telemetry_loop, record
 
 settings=get_settings(); bot=Bot(settings.bot_token)
 
@@ -25,6 +26,8 @@ async def build_dispatcher(redis):
     dp.callback_query.filter(F.message.chat.type == 'private')
     dp.message.middleware(RateLimitMiddleware(redis))
     dp.callback_query.middleware(RateLimitMiddleware(redis))
+    dp.message.middleware(BotMetrics())
+    dp.callback_query.middleware(BotMetrics())
     # Telegram can approve a web login, but exposes no management panel.
     dp['login_redis'] = redis
     dp.include_router(channel_router); dp.include_router(edit_router); dp.include_router(user_router)
@@ -47,8 +50,11 @@ async def zarinpal_callback(request):
         return web.Response(text='درگاه مشغول است؛ کمی بعد دوباره تلاش کنید.',status=503,headers={'Retry-After':'20'})
     try:
         async with asyncio.timeout(18), request.app['payment_slots']:
-            return await _verify_payment_callback(authority,status)
+            result=await _verify_payment_callback(authority,status)
+            record('payment','request','verify','server_error' if result.status>=500 else 'client_error' if result.status>=400 else 'ok')
+            return result
     except TimeoutError:
+        record('payment','request','verify','server_error')
         return web.Response(text='بررسی پرداخت زمان برد؛ کمی بعد دوباره تلاش کنید.',status=503,headers={'Retry-After':'20'})
 
 
@@ -127,7 +133,7 @@ async def main():
     except Exception:
         logging.getLogger(__name__).warning('Could not refresh Telegram command menu',exc_info=True)
     dp=await build_dispatcher(redis)
-    background_tasks=asyncio.gather(run_motivation_loop(bot),run_fulfillment_loop(bot))
+    background_tasks=asyncio.gather(run_motivation_loop(bot),run_fulfillment_loop(bot),run_telemetry_loop('bot'))
     if settings.app_env.lower() == 'production':
         await run_webhook(dp,redis,background_tasks)
     else:

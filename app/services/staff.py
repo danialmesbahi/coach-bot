@@ -12,6 +12,7 @@ from app.config import get_settings
 from app.db.core import db
 
 PERMISSIONS = {
+    'analytics.self': ('مشاهده شاخص‌ها و فعالیت شخصی', 'View own KPIs and activity'),
     'customers.read': ('مشاهده شاگردان و پرونده‌ها', 'View clients and records'),
     'orders.read': ('مشاهده کارها و سفارش‌ها', 'View tasks and orders'),
     'orders.review': ('بررسی اطلاعات و شروع طراحی', 'Review briefs and start design'),
@@ -30,6 +31,8 @@ TEMPLATES = {
 }
 # Fail closed for every authenticated handler, including private media.
 ROUTE_PERMISSIONS = {
+    'analytics': 'analytics.self',
+    'client_error': None,
     'catalog':'catalog.manage','catalog_save':'catalog.manage','catalog_archive':'catalog.manage',
     'catalog_asset':'catalog.manage','catalog_channel':'catalog.manage',
     'session': None, 'logout': None, 'realtime_events': None, 'dashboard': None,

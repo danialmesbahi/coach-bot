@@ -15,6 +15,7 @@ from app.keyboards import main_reply_kb, customer_main_reply_kb, products_kb, ph
 from app.states.forms import PurchaseForm, SupportForm, CancelOrder
 from app.db import repositories as repo
 from app.services.payment import payment
+from app.services.telemetry import record
 from app.config import get_settings
 from app.utils.text import money, status_fa, order_status_fa, split_message, progress_path, subscription_time_fa, order_code, jalali_dt
 from app.utils.validation import clean_text, parse_number, parse_int
@@ -409,6 +410,7 @@ async def begin_purchase(message: Message, state: FSMContext, pid: int, actor, r
             **profile,
         )
         await message.answer(f"{p['title']}\n\n{p['description']}\n\nمدت: {p.get('duration_days',30)} روز\nمبلغ: {money(p['price_irr'])}")
+        record('bot','checkout','started')
         if not active_steps:
             return await finish_questionnaire(message,state,uid)
         first=active_steps[0]
@@ -794,8 +796,10 @@ async def choose_payment(c,state):
         await state.clear()
         return await c.message.answer('این دوره قبلاً خریده شده یا هنوز زمان تمدیدش نرسیده است. وضعیت دقیق را از «خرید دوره» ببین.',reply_markup=await customer_menu(c.from_user.id))
     except Exception:
+        record('bot','checkout','invoice','server_error')
         log.exception('create order failed'); await state.set_state(PurchaseForm.payment_method)
         return await c.message.answer('❌ ثبت سفارش انجام نشد. اتصال رو بررسی کن و دوباره تلاش کن.',reply_markup=payment_methods_kb(mode))
+    record('bot','checkout','invoice')
     if method=='card':
         await state.update_data(order_id=order['id']); await state.set_state(PurchaseForm.receipt)
         await c.message.answer(f"💳 پرداخت کارت‌به‌کارت\n\n💰 مبلغ: {money(p['price_irr'])}\n🏦 {settings.card_to_card_bank_info}\n\nبعد از واریز، عکس واضح رسید رو همین‌جا بفرست.",reply_markup=back_reply_kb()); return

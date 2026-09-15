@@ -2,6 +2,7 @@
 import { SelectMenu } from "@/components/select-menu";
 import { PasswordField } from "@/components/password-field";
 import { Catalog, type CatalogData } from "./catalog";
+import Analytics from "./analytics";
 
 import { chatViewport } from "@/lib/chat-viewport";
 /* eslint-disable @next/next/no-img-element -- Telegram avatars are authenticated same-origin streams. */
@@ -70,6 +71,7 @@ function loadAvatar(userId: number) {
 
 const periods: SalesPeriod[] = ["day", "week", "month", "all"];
 const realtimeTables: Record<View, string[]> = {
+  analytics: [],
   catalog: ["products"],
   dashboard: ["users", "orders", "support_messages", "sales_gate", "staff_assignments", "staff_notes"],
   followups: ["staff_assignments", "staff_notes", "users", "orders"],
@@ -547,7 +549,7 @@ export default function ConsoleApp({ initialView = "dashboard" }: { initialView?
   const [data, setData] = useState<PageData>(); const [loading, setLoading] = useState(true); const [failed, setFailed] = useState(false);
   const [unread, setUnread] = useState(0);
   const [assigned, setAssigned] = useState(0);
-  const [pages, setPages] = useState<Record<View, number>>({ dashboard:1, followups:1, orders:1, messages:1, customers:1, sales:1, catalog:1 });
+  const [pages, setPages] = useState<Record<View, number>>({ dashboard:1, followups:1, orders:1, messages:1, customers:1, sales:1, catalog:1, analytics:1 });
   const [filters, setFilters] = useState({ q:"", activity:"all", product:"", sort:"recent" });
   const [orderStatus, setOrderStatus] = useState("all");
   const [orderSearch, setOrderSearch] = useState("");
@@ -569,6 +571,19 @@ export default function ConsoleApp({ initialView = "dashboard" }: { initialView?
   const t = useMemo(() => translator(lang), [lang]);
 
   useEffect(() => { viewRef.current = view; }, [view]);
+  useEffect(() => {
+    if (!session) return;
+    let nextReport = 0;
+    const report = (event: ErrorEvent | PromiseRejectionEvent) => {
+      if ("reason" in event && event.reason?.name === "AbortError") return;
+      if (Date.now() < nextReport) return;
+      nextReport = Date.now() + 60_000;
+      // Bounded page name only: never send error text, URLs, credentials or user content.
+      void api("/api/analytics/client-error", session.csrf, {method:"POST",body:JSON.stringify({view:viewRef.current})}).catch(()=>{});
+    };
+    addEventListener("error", report); addEventListener("unhandledrejection", report);
+    return () => { removeEventListener("error", report); removeEventListener("unhandledrejection", report); };
+  }, [session]);
   useEffect(() => { document.documentElement.lang = lang; document.documentElement.dir = lang === "fa" ? "rtl" : "ltr"; document.documentElement.dataset.theme = theme; }, [lang, theme]);
   useEffect(() => { api<Session>("/api/session").then(setSession).catch((error) => setSession(error instanceof ApiError && error.status === 401 ? null : null)); }, []);
   useEffect(() => { const timer = setTimeout(() => { setFilters((old) => ({ ...old, q:searchDraft.trim() })); setPages((old) => ({ ...old, customers:1 })); }, searchDraft ? 650 : 0); return () => clearTimeout(timer); }, [searchDraft]);
@@ -593,6 +608,7 @@ export default function ConsoleApp({ initialView = "dashboard" }: { initialView?
 
   useEffect(() => {
     if (!session) return;
+    if (view === "analytics") return;
     let path = `/api/dashboard?period=${period}`;
     if (view === "catalog") path = `/api/catalog?page=${pages.catalog}`;
     if (view === "orders") { const params = new URLSearchParams({ page:String(pages.orders) }); if (orderStatus !== "all") params.set("status",orderStatus); if (orderSearch) params.set("q",orderSearch); path = `/api/orders?${params}`; }
@@ -652,14 +668,14 @@ export default function ConsoleApp({ initialView = "dashboard" }: { initialView?
     window.scrollTo({ top:0, behavior:"auto" });
   }, []);
   const navigate = (next: View) => { if (next !== view) showView(next, true); };
-  useEffect(() => { const pop = () => { const next = location.pathname.split("/")[1] as View; showView(["followups","orders","messages","customers","sales","catalog"].includes(next) ? next : "dashboard", false); }; addEventListener("popstate", pop); return () => removeEventListener("popstate", pop); }, [showView]);
+  useEffect(() => { const pop = () => { const next = location.pathname.split("/")[1] as View; showView(["followups","orders","messages","customers","sales","catalog","analytics"].includes(next) ? next : "dashboard", false); }; addEventListener("popstate", pop); return () => removeEventListener("popstate", pop); }, [showView]);
   const setPage = (page: number) => setPages((old) => ({ ...old, [view]:page }));
   const mutate = async (path: string, body: unknown) => { if (!session) return; await api(path, session.csrf, { method:"POST", body:JSON.stringify(body) }); setRefresh((value) => value + 1); };
 
   if (session === undefined) return <main className="boot"><div className="brand-mark"><span>S</span></div><LoaderCircle className="spin"/></main>;
   if (!session) return <Login lang={lang}/>;
-  const allNav: Array<[View, CopyKey, typeof LayoutDashboard]> = [["dashboard","dashboard",LayoutDashboard],["followups","followups",BellRing],["orders","orders",ClipboardList],["messages","messages",MessageCircle],["customers","customers",UsersRound],["sales","sales",BarChart3],["catalog","catalog",Dumbbell]];
-  const nav = allNav.filter(([key])=>key==="catalog"?session.role!=="staff":key==="dashboard"||(key==="followups"?["chats.read","customers.read","orders.read"].some(permission=>can(session,permission)):can(session,({orders:"orders.read",messages:"chats.read",customers:"customers.read",sales:"sales.read"} as Record<string,string>)[key])));
+  const allNav: Array<[View, CopyKey, typeof LayoutDashboard]> = [["dashboard","dashboard",LayoutDashboard],["followups","followups",BellRing],["orders","orders",ClipboardList],["messages","messages",MessageCircle],["customers","customers",UsersRound],["sales","sales",BarChart3],["catalog","catalog",Dumbbell],["analytics","analytics",Activity]];
+  const nav = allNav.filter(([key])=>key==="catalog"?session.role!=="staff":key==="dashboard"||(key==="followups"?["chats.read","customers.read","orders.read"].some(permission=>can(session,permission)):can(session,({orders:"orders.read",messages:"chats.read",customers:"customers.read",sales:"sales.read",analytics:"analytics.self"} as Record<string,string>)[key])));
   const customerData = renderedView === "customers" && data && "products" in data ? data as CustomerPage : undefined;
   const headerControls = <><div className={`sync-status glass ${connection} ${lang}`} role="status" aria-live="polite"><span>{connection === "online" ? t("connected") : t(connection)}</span>{connection !== "online" && <LoaderCircle className="spin"/>}<i/></div><header className="topbar glass"><button className="top-button" onClick={()=>setStaffOpen(true)} aria-label={lang==="fa"?"پروفایل و مدیریت تیم":"Profile and team"}><UserRound/></button><button className="top-button" onClick={() => setLang(lang === "fa" ? "en" : "fa")} aria-label="Language">{lang === "fa" ? "EN" : "فا"}</button><button className="top-button" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} aria-label="Theme">{theme === "dark" ? <Sun/> : <Moon/>}</button></header></>;
   return <div className={`app-shell ${collapsed === "1" ? "nav-collapsed" : ""}${view === "customers" ? " customers-view" : ""}`}>
@@ -669,9 +685,9 @@ export default function ConsoleApp({ initialView = "dashboard" }: { initialView?
     <aside className="sidebar glass"><div className="sidebar-brand"><div className="brand-mark small"><span>S</span></div><strong>Sensi</strong><button className="collapse-button" onClick={() => setCollapsed(collapsed === "1" ? "0" : "1")} aria-expanded={collapsed !== "1"} aria-label={t(collapsed === "1" ? "expandNav" : "collapseNav")}><Menu /></button></div><nav>{nav.map(([key,label,Icon]) => <button key={key} className={view === key ? "active" : ""} onClick={() => navigate(key)} aria-label={t(label)} title={t(label)}><Icon/><span>{t(label)}</span>{key === "messages" && unread > 0 && <b>{unread}</b>}{key === "followups" && assigned > 0 && <b>{assigned}</b>}</button>)}</nav><div className="sidebar-foot"><span className={`connection ${connection}`}><i/>{connection === "online" ? t("connected") : t(connection)}</span></div></aside>
     {view === "customers" ? <section className={`customer-mobile-bar glass${mobileCustomerToolsHidden ? " is-hidden" : ""}`}>{headerControls}{customerData && <CustomerTools data={customerData} lang={lang} t={t} setPage={setPage} filters={filters} setFilters={setFilters} searchDraft={searchDraft} setSearchDraft={setSearchDraft} className="mobile-customer-tools"/>}</section> : headerControls}
     <main id="main-content" className="content" tabIndex={-1}>
-      {loading && <div className="page-progress" role="progressbar" aria-label="Loading"/>}
-      <div className="content-pane" aria-busy={loading}>
-        {!data ? (failed ? <Glass><Empty text={t("error")}/><button className="button secondary center" onClick={() => setRefresh((value) => value + 1)}>{t("retry")}</button></Glass> : <Skeleton/>) : <ViewContent view={renderedView} data={data} loading={loading} session={session} lang={lang} t={t} period={period} setPeriod={setPeriod} pages={pages} setPage={setPage} filters={filters} setFilters={setFilters} searchDraft={searchDraft} setSearchDraft={setSearchDraft} orderStatus={orderStatus} setOrderStatus={setOrderStatus} orderSearch={orderSearch} setOrderSearch={setOrderSearch} orderSearchDraft={orderSearchDraft} setOrderSearchDraft={setOrderSearchDraft} messageFilter={messageFilter} setMessageFilter={setMessageFilter} messageSearch={messageSearch} setMessageSearch={setMessageSearch} messageSearchDraft={messageSearchDraft} setMessageSearchDraft={setMessageSearchDraft} followupSearch={followupSearch} setFollowupSearch={setFollowupSearch} followupSearchDraft={followupSearchDraft} setFollowupSearchDraft={setFollowupSearchDraft} followupState={followupState} setFollowupState={setFollowupState} followupSort={followupSort} setFollowupSort={setFollowupSort} navigate={navigate} openDrawer={setDrawer} mutate={mutate} refresh={() => setRefresh((value) => value + 1)}/>}
+      {loading && view !== "analytics" && <div className="page-progress" role="progressbar" aria-label="Loading"/>}
+      <div className="content-pane" aria-busy={view !== "analytics" && loading}>
+        {view === "analytics" ? <Analytics session={session} lang={lang} navigate={navigate}/> : !data ? (failed ? <Glass><Empty text={t("error")}/><button className="button secondary center" onClick={() => setRefresh((value) => value + 1)}>{t("retry")}</button></Glass> : <Skeleton/>) : <ViewContent view={renderedView} data={data} loading={loading} session={session} lang={lang} t={t} period={period} setPeriod={setPeriod} pages={pages} setPage={setPage} filters={filters} setFilters={setFilters} searchDraft={searchDraft} setSearchDraft={setSearchDraft} orderStatus={orderStatus} setOrderStatus={setOrderStatus} orderSearch={orderSearch} setOrderSearch={setOrderSearch} orderSearchDraft={orderSearchDraft} setOrderSearchDraft={setOrderSearchDraft} messageFilter={messageFilter} setMessageFilter={setMessageFilter} messageSearch={messageSearch} setMessageSearch={setMessageSearch} messageSearchDraft={messageSearchDraft} setMessageSearchDraft={setMessageSearchDraft} followupSearch={followupSearch} setFollowupSearch={setFollowupSearch} followupSearchDraft={followupSearchDraft} setFollowupSearchDraft={setFollowupSearchDraft} followupState={followupState} setFollowupState={setFollowupState} followupSort={followupSort} setFollowupSort={setFollowupSort} navigate={navigate} openDrawer={setDrawer} mutate={mutate} refresh={() => setRefresh((value) => value + 1)}/>}
       </div>
     </main>
     <nav className="mobile-nav glass">{nav.map(([key,label,Icon]) => <button key={key} className={view === key ? "active" : ""} onClick={() => navigate(key)} aria-label={t(label)}><Icon/>{key === "messages" && unread > 0 && <b>{unread}</b>}{key === "followups" && assigned > 0 && <b>{assigned}</b>}</button>)}</nav>

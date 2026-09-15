@@ -22,6 +22,8 @@ class RateLimitMiddleware(BaseMiddleware):
             if count == 1:
                 await self.redis.expire(key, 65)
             if count > settings.rate_limit_per_minute:
+                from app.services.telemetry import record
+                record('bot','throttled','updates','blocked')
                 # One warning per bucket; spam must not amplify outbound Telegram traffic.
                 if isinstance(event, Message) and count == settings.rate_limit_per_minute + 1:
                     await event.answer('⏳ درخواست‌های زیادی فرستادی. یک دقیقه صبر کن و دوباره تلاش کن.')
