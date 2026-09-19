@@ -4,7 +4,7 @@ asyncpg==0.30.0
 redis==6.4.0
 alembic==1.16.5
 SQLAlchemy==2.0.43
-psycopg2-binary==2.9.10
+psycopg2-binary==2.9.13
 pydantic-settings==2.10.1
 python-dotenv==1.2.2
 jdatetime==5.2.0
