@@ -47,7 +47,9 @@ def progress_path(status: str, renewal: bool=False) -> str:
     return '  ←  '.join(('●' if current >= index else '○') + ' ' + label for label, index in steps)
 
 
-def subscription_time_fa(days_remaining) -> str:
+def subscription_time_fa(days_remaining, duration_days=None) -> str:
+    if duration_days==0: return 'دسترسی دائمی'
+    if duration_days==-1: return 'یک‌بار مصرف'
     if days_remaining is None: return 'شروع اعتبار پس از تحویل'
     days=int(days_remaining)
     if days<0: return f'{abs(days)} روز از پایان گذشته'

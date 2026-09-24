@@ -1,7 +1,5 @@
 from pathlib import Path
 
-from app.services.motivation import MOTIVATIONAL_MESSAGES, message_for
-
 
 ROOT=Path(__file__).resolve().parents[1]
 
@@ -39,10 +37,7 @@ def test_support_messages_are_staged_and_customer_mail_waits_in_inbox():
     assert 'copy_message' in admin
 
 
-def test_motivation_is_bounded_and_deterministic():
-    assert len(MOTIVATIONAL_MESSAGES) >= 3
-    assert message_for(7,42) == message_for(7,42)
-    config=(ROOT/'app/config.py').read_text(encoding='utf-8')
-    repo=(ROOT/'app/db/repositories.py').read_text(encoding='utf-8')
-    assert 'motivation_batch_size' in config
-    assert 'LIMIT $2' in repo
+def test_legacy_motivation_loop_is_not_started():
+    main=(ROOT/'app/main.py').read_text(encoding='utf-8')
+    assert 'run_motivation_loop' not in main
+    assert not (ROOT/'app/services/motivation.py').exists()

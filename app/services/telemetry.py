@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from aiogram import BaseMiddleware
 from aiohttp import web
 from app.db.core import db
+from app.services.diagnostics import operation
 
 log = logging.getLogger(__name__)
 MAX_KEYS = 2048
@@ -71,6 +72,11 @@ async def run_telemetry_loop(source):
                     async with db.acquire() as c:
                         # Delete in bounded batches; do not delete financial or audit records.
                         await c.execute("DELETE FROM analytics_buckets WHERE ctid IN (SELECT ctid FROM analytics_buckets WHERE hour<NOW()-INTERVAL '100 days' LIMIT 2000)")
+                        # Retain consumed one-use tombstones; deleting them would permit redemption again.
+                        await c.execute("""DELETE FROM content_links WHERE token_hash IN (
+                            SELECT l.token_hash FROM content_links l JOIN orders o ON o.id=l.order_id
+                            WHERE l.expires_at<NOW()-INTERVAL '7 days'
+                            AND (l.redeemed_at IS NULL OR o.duration_days<>-1) LIMIT 500)""")
                     cleanup_at=time.monotonic()+3600
                 except Exception:
                     cleanup_at=time.monotonic()+60
@@ -94,7 +100,9 @@ async def web_metrics(request, handler):
         status=exc.status
         raise
     finally:
-        record('web','request',name,'server_error' if status>=500 else 'client_error' if status>=400 else 'ok',time.monotonic()-started)
+        elapsed=time.monotonic()-started
+        record('web','request',name,'server_error' if status>=500 else 'client_error' if status>=400 else 'ok',elapsed)
+        operation('web',name,elapsed,status,request.get('request_id',''),request.method)
 
 
 class BotMetrics(BaseMiddleware):
@@ -106,8 +114,10 @@ class BotMetrics(BaseMiddleware):
             result=await handler(event,data)
         except Exception:
             record('bot','request','purchase' if step in STEPS else 'other','server_error',time.monotonic()-started)
+            log.exception('Bot operation failed',extra={'event':'bot_operation_failed','route':step or 'other','elapsed_ms':(time.monotonic()-started)*1000})
             raise
         record('bot','request','purchase' if step in STEPS else 'other','ok',time.monotonic()-started)
+        operation('bot',step or 'other',time.monotonic()-started)
         if step in STEPS and data.get('state'):
             try:
                 after=await data['state'].get_state()

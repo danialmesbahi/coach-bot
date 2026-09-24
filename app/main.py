@@ -4,6 +4,7 @@ from aiohttp import web
 from app.services.payment import payment
 from app.db import repositories as repo
 from aiogram import Bot, Dispatcher, F
+from aiogram.exceptions import TelegramNetworkError, TelegramServerError
 from aiogram.types import BotCommand
 from aiogram.fsm.storage.redis import RedisStorage
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
@@ -13,7 +14,6 @@ from app.db.core import db
 from app.handlers.user import router as user_router
 from app.handlers.edit import router as edit_router
 from app.middlewares.security import RateLimitMiddleware
-from app.services.motivation import run_motivation_loop
 from app.services.fulfillment import router as channel_router, run_fulfillment_loop
 from app.services.telemetry import BotMetrics, run_telemetry_loop, record
 
@@ -55,6 +55,7 @@ async def zarinpal_callback(request):
             return result
     except TimeoutError:
         record('payment','request','verify','server_error')
+        logging.getLogger(__name__).warning('Payment verification timed out',exc_info=True)
         return web.Response(text='بررسی پرداخت زمان برد؛ کمی بعد دوباره تلاش کنید.',status=503,headers={'Retry-After':'20'})
 
 
@@ -86,19 +87,33 @@ async def _stop_task(task):
         pass
 
 
-async def run_polling(dp, redis, motivation_task):
-    await bot.delete_webhook(drop_pending_updates=False)
+async def run_polling(dp, redis, background_tasks):
     try:
+        await prepare_polling()
         await dp.start_polling(
             bot,
             allowed_updates=dp.resolve_used_update_types(),
             tasks_concurrency_limit=settings.bot_concurrency,
         )
     finally:
-        await _stop_task(motivation_task)
+        await _stop_task(background_tasks)
         await redis.aclose(); await db.close(); await bot.session.close()
 
-async def run_webhook(dp, redis, motivation_task):
+
+async def prepare_polling():
+    # Retry only transient connection failures; keep the process (and migrations) out of a restart loop.
+    delay=5
+    while True:
+        try:
+            await bot.delete_webhook(drop_pending_updates=False)
+            await bot.me()
+            return
+        except (TelegramNetworkError,TelegramServerError):
+            logging.getLogger(__name__).warning('Telegram startup connection unavailable',exc_info=True,extra={'event':'telegram_startup_retry'})
+            await asyncio.sleep(delay)
+            delay=min(delay*2,60)
+
+async def run_webhook(dp, redis, background_tasks):
     path='/telegram/webhook'
     webhook_url=settings.public_base_url.rstrip('/') + path
     await bot.set_webhook(webhook_url, secret_token=settings.webhook_secret, drop_pending_updates=False, max_connections=40, allowed_updates=dp.resolve_used_update_types())
@@ -116,11 +131,13 @@ async def run_webhook(dp, redis, motivation_task):
     try:
         await asyncio.Event().wait()
     finally:
-        await _stop_task(motivation_task)
+        await _stop_task(background_tasks)
         await runner.cleanup(); await redis.aclose(); await db.close(); await bot.session.close()
 
 async def main():
+    from app.services.diagnostics import configure
     logging.basicConfig(level=getattr(logging,settings.log_level.upper(),logging.INFO),format='%(asctime)s %(levelname)s %(name)s %(message)s')
+    configure('bot')
     await db.connect()
     redis=Redis.from_url(settings.redis_url, encoding='utf-8', decode_responses=True)
     await redis.ping()
@@ -133,7 +150,7 @@ async def main():
     except Exception:
         logging.getLogger(__name__).warning('Could not refresh Telegram command menu',exc_info=True)
     dp=await build_dispatcher(redis)
-    background_tasks=asyncio.gather(run_motivation_loop(bot),run_fulfillment_loop(bot),run_telemetry_loop('bot'))
+    background_tasks=asyncio.gather(run_fulfillment_loop(bot),run_telemetry_loop('bot'))
     if settings.app_env.lower() == 'production':
         await run_webhook(dp,redis,background_tasks)
     else:

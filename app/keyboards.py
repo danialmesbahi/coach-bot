@@ -181,8 +181,8 @@ def products_kb(products, page=1, pages=1):
             text=f"🔄 تمدید {p['title']} — {subscription_time_fa(p.get('days_remaining'))}"; data=f"renew:{p['latest_order_id']}"; style='success'
         elif p.get('renewal_in_progress'):
             text=f"{p['title']} — {order_status_fa(p.get('latest_status') or 'paid',True)}"; data=f"subscription:status:{p['id']}"; style=None
-        elif p.get('latest_status') == 'delivered' and p.get('days_remaining') is not None:
-            text=f"{p['title']} — {subscription_time_fa(p['days_remaining'])}"; data=f"subscription:status:{p['id']}"; style=None
+        elif p.get('latest_status') == 'delivered':
+            text=f"{p['title']} — {subscription_time_fa(p.get('days_remaining'),p.get('purchased_duration_days'))}"; data=f"subscription:status:{p['id']}"; style=None
         else:
             text=f"{p['title']} — {order_status_fa(p.get('latest_status') or 'paid')}"; data=f"subscription:status:{p['id']}"; style=None
         b.button(text=text, callback_data=data, style=style)

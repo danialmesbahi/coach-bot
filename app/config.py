@@ -35,10 +35,6 @@ class Settings(BaseSettings):
     db_pool_min: int = Field(default=3, ge=1, le=20)
     db_pool_max: int = Field(default=25, ge=5, le=80)
     bot_concurrency: int = Field(default=200, ge=20, le=1000)
-    motivation_enabled: bool = True
-    motivation_interval_days: int = Field(default=3, ge=1, le=30)
-    motivation_batch_size: int = Field(default=20, ge=1, le=100)
-    motivation_check_minutes: int = Field(default=60, ge=15, le=1440)
     migrate_on_start: bool = True
     web_dev_login: bool = False
     web_session_hours: int = Field(default=12, ge=1, le=72)

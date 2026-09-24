@@ -32,6 +32,8 @@ async def analytics(request):
     if await _rate_limited(request,'analytics',20):
         return response({'error':'rate_limited'},429)
     identity=actor['staff_id'] if scope=='personal' else 0
+    activity_only=request.query.get('section')=='activity'
+    include_platform=actor['role']=='platform'
     async def load():
         slots=request.app.setdefault('analytics_slots',asyncio.Semaphore(2))
         try:
@@ -41,11 +43,16 @@ async def analytics(request):
             raise web.HTTPServiceUnavailable(headers={'Retry-After':'5'})
         try:
             async with asyncio.timeout(9):
-                return await snapshot(identity,days,category,page)
+                if activity_only:
+                    end=datetime.now(timezone.utc)
+                    async with db.acquire() as c,c.transaction(readonly=True):
+                        await c.execute("SET LOCAL statement_timeout='7000ms'")
+                        return await activity_log(c,end-timedelta(days=days),end,identity,category,page,include_platform)
+                return await snapshot(identity,days,category,page,include_platform)
         finally:
             slots.release()
     # Same-role shared single-flight cache; personal entries cannot cross identities.
-    result=await _cached(request,f'analytics:{identity}:{days}:{category}:{page}',60,load)
+    result=await _cached(request,f'analytics:{identity}:{days}:{category}:{page}:{activity_only}:{include_platform}',60,load)
     return response(result)
 
 
@@ -54,18 +61,46 @@ async def client_error(request):
     from app.services.telemetry import record
     if await _rate_limited(request,'client_error',6):
         return response({'error':'rate_limited'},429)
-    if request.content_length is not None and request.content_length>256:
-        raise web.HTTPRequestEntityTooLarge(max_size=256,actual_size=request.content_length)
+    if request.content_length is not None and request.content_length>2048:
+        raise web.HTTPRequestEntityTooLarge(max_size=2048,actual_size=request.content_length)
     async with asyncio.timeout(2):
-        body=await request.clone(client_max_size=256).json()
-    if not isinstance(body,dict) or set(body)!={'view'} or not isinstance(body['view'],str) or body['view'] not in {
+        body=await request.clone(client_max_size=2048).json()
+    if not isinstance(body,dict) or set(body)-{'view','frames','kind','request_id'} or not isinstance(body.get('view'),str) or body['view'] not in {
         'dashboard','customers','orders','messages','sales','followups','catalog','analytics'}:
         raise web.HTTPBadRequest()
-    record('web','client',body['view'],'server_error')
+    import logging, re
+    frames=body.get('frames',[])
+    if not isinstance(frames,list) or len(frames)>10 or any(not isinstance(f,str) or not re.fullmatch(r'[a-zA-Z0-9_.-]{1,100}\.js:\d{1,8}:\d{1,8}',f) for f in frames):
+        raise web.HTTPBadRequest()
+    kind=body.get('kind','Error')
+    if not isinstance(kind,str) or kind not in {'Error','TypeError','RangeError','ReferenceError','SyntaxError','URIError','AggregateError','NetworkError','TimeoutError','HttpError','SlowRequest','MediaError'}: kind='Error'
+    request_id=body.get('request_id','')
+    if not isinstance(request_id,str) or (request_id and not re.fullmatch('[a-f0-9]{16}',request_id)): raise web.HTTPBadRequest()
+    record('web','client',body['view'],'ok' if kind=='SlowRequest' else 'server_error',2.001 if kind=='SlowRequest' else 0)
+    logging.getLogger('client').log(logging.WARNING if kind=='SlowRequest' else logging.ERROR,'Client failure',extra={'event':body['view']+'.'+kind,'client_frames':frames,'request_id':request_id})
     return response({'ok':True})
 
 
-async def snapshot(identity, days, category='all', page=1):
+async def activity_log(c,start,end,identity,category,page,include_platform=True):
+    # Both report surfaces use this metadata-only feed; never return message bodies or audit metadata.
+    logs=await c.fetch('''WITH events AS (
+        SELECT a.id,a.created_at,a.actor_name,s.role AS actor_role,a.action,a.target_type AS target,a.target_id,'audit' AS source,
+            CASE WHEN a.action='staff_login' THEN 'login' WHEN a.action IN ('internal_note','assigned') THEN 'notes'
+            WHEN a.target_type='order' THEN 'orders' ELSE 'team' END AS category
+        FROM audit_logs a LEFT JOIN staff_accounts s ON s.id=a.actor_staff_id
+        WHERE a.created_at>=$1 AND a.created_at<$2 AND ($3::bigint=0 OR a.actor_staff_id=$3)
+            AND ($6 OR s.role IS DISTINCT FROM 'platform')
+        UNION ALL
+        SELECT m.id,m.created_at,m.sender_name,s.role,'reply_sent','thread',m.user_id,'message','messages'
+        FROM support_messages m LEFT JOIN staff_accounts s ON s.id=m.sender_staff_id
+        WHERE m.direction='sensi' AND m.created_at>=$1 AND m.created_at<$2 AND ($3::bigint=0 OR m.sender_staff_id=$3)
+            AND ($6 OR s.role IS DISTINCT FROM 'platform')
+    ) SELECT * FROM events WHERE $4='all' OR category=$4
+    ORDER BY created_at DESC,source,id DESC LIMIT 26 OFFSET $5''',start,end,identity,category,(page-1)*25,include_platform)
+    return {'items':[dict(r) for r in logs[:25]],'page':page,'has_more':len(logs)>25}
+
+
+async def snapshot(identity, days, category='all', page=1,include_platform=True):
     end=datetime.now(timezone.utc)
     start=end-timedelta(days=days); previous=start-timedelta(days=days)
     result={'scope':'personal' if identity else 'platform','days':days,'from':start,'to':end,'generated_at':end}
@@ -89,18 +124,7 @@ async def snapshot(identity, days, category='all', page=1):
         activity['unseen']=await c.fetchval('SELECT COUNT(*) FROM staff_assignments WHERE seen_at IS NULL AND ($1::bigint=0 OR staff_id=$1)',identity)
         activity['replies_change']=change(activity['replies'],activity['previous_replies'])
         result['activity']=activity
-        # Metadata only. Never return notes, passwords, chats, filenames or arbitrary audit metadata.
-        logs=await c.fetch('''WITH events AS (
-            SELECT id,created_at,actor_name,action,target_type AS target,'audit' AS source,
-                CASE WHEN action='staff_login' THEN 'login' WHEN action IN ('internal_note','assigned') THEN 'notes'
-                WHEN target_type='order' THEN 'orders' ELSE 'team' END AS category
-            FROM audit_logs WHERE created_at>=$1 AND created_at<$2 AND ($3::bigint=0 OR actor_staff_id=$3)
-            UNION ALL
-            SELECT id,created_at,sender_name,'reply_sent','thread','message','messages'
-            FROM support_messages WHERE direction='sensi' AND created_at>=$1 AND created_at<$2 AND ($3::bigint=0 OR sender_staff_id=$3)
-        ) SELECT * FROM events WHERE $4='all' OR category=$4
-        ORDER BY created_at DESC,source,id DESC LIMIT 26 OFFSET $5''',start,end,identity,category,(page-1)*25)
-        result['logs']={'items':[dict(r) for r in logs[:25]],'page':page,'has_more':len(logs)>25}
+        result['logs']=await activity_log(c,start,end,identity,category,page,include_platform)
         if identity:
             return result
         sales=dict(await c.fetchrow('''SELECT

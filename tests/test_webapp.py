@@ -1,10 +1,34 @@
 import asyncio
 import json
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 from app.config import get_settings
+from app.db import repositories as repo
 from app.db.repositories import purchaser_order_by
 from app.webapp import ASSET_FILES, SALES_PERIODS, _broadcast_update, _cached, _inspect_upload, _sales_period, _web_message, _web_order, _web_user, management_record_visible
+
+
+def test_customer_list_keeps_registered_users_without_paid_orders(monkeypatch):
+    captured = []
+
+    class Connection:
+        async def fetch(self, sql, *args):
+            captured.append((sql, args))
+            return [dict(user_id=7, orders_count=0, active_courses=0, total_count=1)]
+
+    @asynccontextmanager
+    async def acquire():
+        yield Connection()
+
+    monkeypatch.setattr(repo.db, "acquire", acquire)
+    items, total = asyncio.run(repo.purchaser_list(activity="users", sort="joined_asc"))
+    assert total == 1 and items[0]["orders_count"] == 0
+    sql, args = captured[0]
+    assert "LEFT JOIN orders o ON o.user_id=u.id AND o.paid_at IS NOT NULL" in sql
+    assert "($2='users' AND orders_count=0)" in sql
+    assert "ORDER BY joined_at ASC" in sql
+    assert args[1] == "users"
 
 
 def test_web_console_has_responsive_theme_and_role_service():
@@ -95,6 +119,8 @@ def test_customer_sorting_is_whitelisted_and_customer_ui_is_wired():
     assert purchaser_order_by("orders_asc").startswith("orders_count ASC")
     assert purchaser_order_by("name_desc").endswith("DESC, user_id DESC")
     assert purchaser_order_by("DROP TABLE users") == purchaser_order_by("recent")
+    assert purchaser_order_by("joined_desc").startswith("joined_at DESC")
+    assert purchaser_order_by("joined_asc").startswith("joined_at ASC")
     assert all(value in client for value in ("customer-card", "data-customer-search", "data-customer-filter", 'role="listbox"', "closeCustomerFilters"))
     assert "customer-card>.row-link" not in open("app/web/app.css", encoding="utf-8").read()
     assert all(value in client for value in ("sidebarCollapsed", "applySidebar", "sidebar-collapsed"))

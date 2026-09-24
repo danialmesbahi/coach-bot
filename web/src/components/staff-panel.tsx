@@ -1,7 +1,8 @@
 "use client";
 
 import { FormEvent, ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
-import { Activity, ArrowLeft, ArrowRight, Check, ChevronDown, LoaderCircle, LogOut, Send, ShieldCheck, StickyNote, TriangleAlert, UsersRound, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, ChevronDown, LoaderCircle, LogOut, Send, ShieldCheck, StickyNote, TriangleAlert, UsersRound, X } from "lucide-react";
+import { ActivityLog } from "./activity-log";
 import { api, ApiError } from "@/lib/api";
 import { SelectMenu } from "@/components/select-menu";
 import { PasswordField } from "@/components/password-field";
@@ -11,8 +12,6 @@ import type { Lang, Session } from "@/lib/types";
 export const can = (session: Session, permission: string) => session.role === "platform" || session.role === "leader" || session.permissions.includes(permission);
 type Account = { id:number; telegram_id:number|null; username:string; display_name:string; role:Session["role"]; permissions:string[]; status:"active"|"invited"|"disabled"; session_version:number };
 type Team = { items:Account[]; total:number; permissions:Record<string,[string,string]>; templates:Record<string,string[]> };
-type AuditItem = {id:number;actor_name:string|null;actor_role:string|null;action:string;target_type:string;target_id:number;target_name:string|null;created_at:string};
-type Audit = { items:AuditItem[]; next:number|null };
 type Notice = {kind:"success"|"error";text:string};
 
 export function LogoutButton({session,lang,className="button danger staff-logout",children}:{session:Session;lang:Lang;className?:string;children?:ReactNode}) {
@@ -27,8 +26,8 @@ export function StaffPanel({session,lang,onClose}:{session:Session;lang:Lang;onC
   const dialog=useRef<HTMLDialogElement>(null);
   const fa=lang==="fa",manager=session.role!=="staff";
   const [tab,setTab]=useState<"profile"|"team"|"audit">("profile");
-  const [team,setTeam]=useState<Team>(),[audit,setAudit]=useState<Audit>();
-  const [page,setPage]=useState(1),[cursor,setCursor]=useState<number|null>(null);
+  const [team,setTeam]=useState<Team>();
+  const [page,setPage]=useState(1);
   const [busy,setBusy]=useState(false),[feedback,setFeedback]=useState<Notice|null>(null);
   const [name,setName]=useState(session.displayName);
   const [currentPassword,setCurrentPassword]=useState(""),[ownPassword,setOwnPassword]=useState("");
@@ -36,13 +35,10 @@ export function StaffPanel({session,lang,onClose}:{session:Session;lang:Lang;onC
   const [editing,setEditing]=useState<Account|null>(null),[creating,setCreating]=useState(false),[resetting,setResetting]=useState<Account|null>(null);
   const [draft,setDraft]=useState({display_name:"",username:"",password:"",role:"staff",permissions:[] as string[]});
   const roleName=(role:string)=>({platform:fa?"تیم توسعه":"Platform",leader:fa?"مربی اصلی":"Leader",staff:fa?"همکار":"Staff"}[role]??role);
-  const actionName=(action:string)=>({staff_login:fa?"وارد پنل شد":"Signed in",staff_profile:fa?"نام نمایشی را تغییر داد":"Updated their display name",staff_password_changed:fa?"رمز ورود خود را تغییر داد":"Changed their password",staff_create:fa?"عضو جدید ساخت":"Created a team member",staff_permissions:fa?"دسترسی‌های عضو را تغییر داد":"Changed member permissions",staff_disable:fa?"حساب عضو را غیرفعال کرد":"Disabled a member",staff_enable:fa?"حساب عضو را فعال کرد":"Enabled a member",staff_reset_password:fa?"رمز عضو را بازنشانی کرد":"Reset a member password",staff_revoke:fa?"نشست‌های عضو را بست":"Revoked member sessions",internal_note:fa?"یادداشت داخلی ثبت کرد":"Added an internal note",assigned:fa?"مسئول کار را تغییر داد":"Changed task assignment",web_sales_gate:fa?"وضعیت فروش را تغییر داد":"Changed sales availability",web_approve_receipt:fa?"پرداخت را تأیید کرد":"Approved a payment",web_reject_receipt:fa?"پرداخت را رد کرد":"Rejected a payment",web_in_progress:fa?"سفارش را وارد طراحی کرد":"Moved an order to production",web_needs_info:fa?"اطلاعات بیشتر درخواست کرد":"Requested more information",web_deliver_plan:fa?"برنامه را تحویل داد":"Delivered a plan"}[action]??(fa?"یک فعالیت ثبت کرد":"Recorded an activity"));
-  const targetName=(item:AuditItem)=>item.target_name??({staff:fa?"عضو تیم":"Team member",order:fa?"سفارش":"Order",thread:fa?"گفت‌وگو":"Conversation",sales:fa?"فروش":"Sales"}[item.target_type]??(fa?"رکورد":"Record"))+` #${item.target_id}`;
   const reload=useCallback((signal?:AbortSignal)=>{
     if(tab==="team")return api<Team>(`/api/staff/team?page=${page}`,session.csrf,{signal}).then(setTeam);
-    if(tab==="audit")return api<Audit>(`/api/staff/audit${cursor?`?before=${cursor}`:""}`,session.csrf,{signal}).then(setAudit);
     return Promise.resolve();
-  },[tab,page,cursor,session.csrf]);
+  },[tab,page,session.csrf]);
   useEffect(()=>{
     dialog.current?.showModal();
     const old=document.body.style.overflow;document.body.style.overflow="hidden";
@@ -155,7 +151,7 @@ export function StaffPanel({session,lang,onClose}:{session:Session;lang:Lang;onC
         })}</div>}
         {!(creating||editing||resetting)&&(team?.total??0)>20&&<div className="staff-pager"><button aria-label={fa?"صفحه قبل":"Previous page"} disabled={page<=1} onClick={()=>setPage(page-1)}>{fa?<ArrowRight/>:<ArrowLeft/>}</button><span>{page}</span><button aria-label={fa?"صفحه بعد":"Next page"} disabled={page*20>=(team?.total??0)} onClick={()=>setPage(page+1)}>{fa?<ArrowLeft/>:<ArrowRight/>}</button></div>}
       </>}
-      {tab==="audit"&&<section className="staff-audit-section"><header><div><Activity/><div><h3>{fa?"ردپای فعالیت تیم":"Team activity trail"}</h3><p>{fa?"هر تغییر مهم همراه با نام انجام‌دهنده و زمان دقیق ثبت می‌شود؛ رمزها هرگز ذخیره نمی‌شوند.":"Every important change records who did it and when. Passwords are never stored."}</p></div></div><span>{fa?`${audit?.items.length??0} رویداد`:`${audit?.items.length??0} events`}</span></header><ol className="staff-audit">{audit?.items.map(item=><li key={item.id}><i aria-hidden="true"><Activity/></i><div><header><strong>{item.actor_name??(fa?"سیستم":"System")}</strong><span>{item.actor_role?roleName(item.actor_role):fa?"رویداد سیستمی":"System event"}</span></header><p>{actionName(item.action)}</p><small>{targetName(item)}</small></div><time>{new Intl.DateTimeFormat(fa?"fa-IR":"en-GB",{dateStyle:"medium",timeStyle:"short"}).format(new Date(item.created_at))}</time></li>)}</ol>{audit&&!audit.items.length&&<p className="staff-audit-empty">{fa?"هنوز فعالیتی برای نمایش وجود ندارد.":"No activity to show yet."}</p>}<div className="staff-audit-pager"><button onClick={()=>setCursor(null)} disabled={!cursor}>{fa?"جدیدترین‌ها":"Latest"}</button><button disabled={!audit?.next} onClick={()=>setCursor(audit?.next??null)}>{fa?"رویدادهای قدیمی‌تر":"Older events"}</button></div></section>}
+      {tab==="audit"&&<ActivityLog session={session} lang={lang} showPeriod/>}
     </div>
   </dialog>;
 }
@@ -164,15 +160,16 @@ type CollaborationData={assignment:{staff_id:number|null;version:number;display_
 export function CollaborationPanel({kind,id,session,lang,version,variant="inline",initialOpen=false}:{kind:"thread"|"customer"|"order";id:number;session:Session;lang:Lang;version:number;variant?:"inline"|"header";initialOpen?:boolean}) {
   const [data,setData]=useState<CollaborationData>(),[note,setNote]=useState(""),[busy,setBusy]=useState(false),[error,setError]=useState(false);
   const panel=useRef<HTMLDetailsElement>(null);
+  const read=useRef<AbortController|null>(null),mutation=useRef(false);
   const noteId=useId();
   const path=`/api/collaboration/${kind}/${id}`,fa=lang==="fa";
   const permission={thread:"chats.reply",customer:"customers.read",order:"orders.review"}[kind];
   const editable=can(session,permission),assignable=editable;
-  useEffect(()=>{const controller=new AbortController();void api<CollaborationData>(path,session.csrf,{signal:controller.signal}).then(setData).catch(()=>{if(!controller.signal.aborted)setError(true);});return()=>controller.abort();},[path,session.csrf,version]);
+  useEffect(()=>{if(mutation.current)return;const controller=new AbortController();read.current=controller;void api<CollaborationData>(path,session.csrf,{signal:controller.signal}).then(result=>{if(!controller.signal.aborted)setData(result);}).catch(()=>{if(!controller.signal.aborted)setError(true);});return()=>controller.abort();},[path,session.csrf,version]);
   useEffect(()=>{if(initialOpen&&panel.current)panel.current.open=true;},[initialOpen]);
-  const change=async(body:unknown)=>{if(busy)return;setBusy(true);setError(false);try{setData(await api<CollaborationData>(path,session.csrf,{method:"POST",body:JSON.stringify(body)}));setNote("");}catch{setError(true);}finally{setBusy(false);}};
+  const change=async(body:{action:"note";text:string}|{action:"assign";staff_id:number|null;version:number})=>{if(mutation.current)return;mutation.current=true;read.current?.abort();setBusy(true);setError(false);try{setData(await api<CollaborationData>(path,session.csrf,{method:"POST",body:JSON.stringify(body)}));if(body.action==="note")setNote(current=>current===body.text?"":current);}catch{setError(true);}finally{mutation.current=false;setBusy(false);}};
   const notes=data?.notes??[];
-  const context=kind==="order"?(fa?"گزارش داخلی این برنامه":"Internal plan report"):kind==="customer"?(fa?"پیگیری پروندهٔ این شاگرد":"Client profile follow-up"):(fa?"پیگیری این گفت‌وگو":"Conversation follow-up");
+  const context=kind==="order"?(fa?"گزارش داخلی این برنامه":"Internal plan report"):kind==="customer"?(fa?"پیگیری پروندهٔ این کاربر":"User profile follow-up"):(fa?"پیگیری این گفت‌وگو":"Conversation follow-up");
   const date=(value:string)=>new Intl.DateTimeFormat(fa?"fa-IR":"en-GB",{dateStyle:"medium",timeStyle:"short"}).format(new Date(value));
   return <details ref={panel} className={`collaboration-panel collaboration-panel--${variant}`}>
     <summary aria-label={fa?`${notes.length} یادداشت تیم · ${context}`:`${notes.length} team notes · ${context}`}><i aria-hidden="true"><StickyNote/></i>{variant==="inline"&&<span className="collaboration-heading"><strong>{fa?"یادداشت‌های تیم":"Team notes"}</strong><small>{context}</small></span>}<span className="collaboration-count" aria-label={fa?`${notes.length} یادداشت`:`${notes.length} notes`}>{notes.length}</span>{variant==="inline"&&<ChevronDown className="collaboration-chevron" aria-hidden="true"/>}</summary>

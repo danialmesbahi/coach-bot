@@ -2,6 +2,15 @@ from io import BytesIO
 from pathlib import Path
 from zipfile import BadZipFile, ZipFile
 
+
+def message_file(message):
+    """Use Telegram's returned kind, not the requested send method."""
+    for kind in ('document','animation','video','audio','voice','sticker','photo'):
+        value=getattr(message,kind,None)
+        if value:
+            return kind,(value[-1] if kind=='photo' else value).file_id
+    return 'text',None
+
 SAFE_UPLOAD_TYPES = {
     ".jpg": ("image/jpeg", "image"), ".jpeg": ("image/jpeg", "image"),
     ".png": ("image/png", "image"), ".webp": ("image/webp", "image"),

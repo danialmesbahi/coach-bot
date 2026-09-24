@@ -2,6 +2,9 @@
 import asyncio
 import os
 import subprocess
+import sys
+import time
+import json
 import uuid
 from types import SimpleNamespace
 from urllib.parse import urlsplit, urlunsplit
@@ -56,7 +59,44 @@ async def main():
             assert len((await snapshot(sid,30,'login'))['logs']['items'])==1
             assert len((await snapshot(sid,30,'messages'))['logs']['items'])==1
             assert not (await snapshot(sid,30,'all',2))['logs']['items']
+            from app.analytics_api import activity_log
+            from datetime import datetime,timedelta,timezone
+            async with db.acquire() as c:
+                pid=await c.fetchval("INSERT INTO staff_accounts(username,display_name,role,status) VALUES('analytics_platform','Developer','platform','active') RETURNING id")
+                await c.execute("INSERT INTO audit_logs(actor_staff_id,actor_name,action,target_type,target_id) VALUES($1,'Developer','product_saved','product',$2)",pid,product['id'])
+                end=datetime.now(timezone.utc)
+                leader=await activity_log(c,end-timedelta(days=30),end,0,'all',1,False)
+                platform=await activity_log(c,end-timedelta(days=30),end,0,'all',1,True)
+                assert all(r['actor_role']!='platform' for r in leader['items'])
+                assert any(r['action']=='product_saved' and r['actor_role']=='platform' for r in platform['items'])
+                assert any(r['action']=='reply_sent' and r['target_id']==uid for r in leader['items'])
+                assert 'secret' not in str(platform)
             print('PASS: KPI SQL, financial totals, daily reconciliation, invoice cohort, null empty metrics, personal isolation, private metadata, category pagination, telemetry persistence')
+            if '--benchmark' in sys.argv:
+                # Disposable DB only. This is a query benchmark, not a 10k-user load test.
+                async with db.acquire() as c:
+                    await c.execute("INSERT INTO users(telegram_id,first_name) SELECT 8000000000+n,'Load user '||n FROM generate_series(1,10000) n")
+                    await c.execute("""INSERT INTO orders(user_id,product_id,amount,status,form_snapshot,paid_at,delivered_at)
+                        SELECT u.id,$1,100000,CASE WHEN n=1 THEN 'paid' ELSE 'delivered' END,'{}',NOW(),
+                        CASE WHEN n=1 THEN NULL ELSE NOW() END FROM users u CROSS JOIN generate_series(1,5) n WHERE u.telegram_id>8000000000""",product['id'])
+                    await c.execute("""INSERT INTO support_messages(user_id,message_id,sender_telegram_id,content_text,read_at)
+                        SELECT u.id,n,u.telegram_id,'Fixture message',CASE WHEN n=1 THEN NULL ELSE NOW() END
+                        FROM users u CROSS JOIN generate_series(1,10) n WHERE u.telegram_id>8000000000""")
+                    await c.execute('ANALYZE users; ANALYZE orders; ANALYZE support_messages')
+                samples={}
+                async def measure(name,query):
+                    start=time.perf_counter()
+                    await query()
+                    samples.setdefault(name,[]).append(round((time.perf_counter()-start)*1000,1))
+                queries={'clients':lambda:repo.purchaser_list(page_size=20),'client_search':lambda:repo.purchaser_list(query='Load user 9'),
+                         'tasks':lambda:repo.list_sensi_orders(page_size=20),'messages':lambda:repo.support_threads(page_size=20),
+                         'analytics':lambda:snapshot(0,30)}
+                for query_name,query in queries.items():
+                    for _ in range(3): await measure(query_name,query)
+                print('QUERY BENCHMARK ms, 10k additional users / 50k orders / 100k messages:',json.dumps(samples))
+                samples.clear()
+                await asyncio.gather(*(measure(name,query) for _ in range(2) for name,query in queries.items()))
+                print('QUERY BENCHMARK ms, 10 concurrent reads:',json.dumps(samples))
         finally:
             await db.close()
     finally:

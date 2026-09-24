@@ -409,7 +409,8 @@ async def begin_purchase(message: Message, state: FSMContext, pid: int, actor, r
             renewal_of_order_id=renewal_of_order_id,
             **profile,
         )
-        await message.answer(f"{p['title']}\n\n{p['description']}\n\nمدت: {p.get('duration_days',30)} روز\nمبلغ: {money(p['price_irr'])}")
+        from app.services.catalog import duration_label
+        await message.answer(f"{p['title']}\n\n{p['description']}\n\nمدت: {duration_label(p)}\nمبلغ: {money(p['price_irr'])}")
         record('bot','checkout','started')
         if not active_steps:
             return await finish_questionnaire(message,state,uid)
@@ -997,7 +998,7 @@ async def show_orders(m, page: int = 1, edit: bool = False, actor=None):
     for o in rows:
         code=order_code(o['id']); renewal=bool(o.get('renewal_of_order_id'))
         status=order_status_fa(o['status'],renewal); command=f'/order_{o["id"]}'
-        lines.append(_table(code,[('دوره',o['product_title']),('وضعیت',status),('زمان',subscription_time_fa(o.get('days_remaining'))),('جزئیات',_bot_link(bot_username,'نمایش سفارش',command.removeprefix('/')))]))
+        lines.append(_table(code,[('دوره',o['product_title']),('وضعیت',status),('زمان',subscription_time_fa(o.get('days_remaining'),o.get('duration_days'))),('جزئیات',_bot_link(bot_username,'نمایش سفارش',command.removeprefix('/')))]))
     return await _screen(m,'\n\n'.join(lines),orders_list_kb(rows,page,total_pages),edit)
 
 
@@ -1009,7 +1010,7 @@ async def show_active_courses(m: Message, tg_id: int, edit: bool=False):
     fallback=['🏋️ دوره‌های فعال']
     bot_username=(await m.bot.me()).username
     for row in rows:
-        remaining=subscription_time_fa(row.get('days_remaining'))
+        remaining=subscription_time_fa(row.get('days_remaining'),row.get('duration_days'))
         command=f'/course_{row["id"]}'
         fallback.append(_table(order_code(row['id']),[
             ('دوره',row['product_title']),
@@ -1173,7 +1174,7 @@ async def show_order_detail_message(m: Message, tg_id: int, oid: int, active_cou
     elif o['status']=='payment_rejected':
         markup=rejected_receipt_kb(oid)
     elif o.get('paid_at'):
-        markup=renewal_order_kb(oid,bool(o.get('plan_file_id')),bool(o.get('renewal_eligible')))
+        markup=renewal_order_kb(oid,bool(o.get('plan_file_id') or repo._json_object(o.get('product_snapshot')).get('delivery_mode') in {'content','channel'}),bool(o.get('renewal_eligible')))
     else:
         b=InlineKeyboardBuilder(); b.button(text='⬅️ تاریخچه سفارشات',callback_data='orders'); b.adjust(1); markup=b.as_markup()
     renewal=bool(o.get('renewal_of_order_id'))
@@ -1183,7 +1184,7 @@ async def show_order_detail_message(m: Message, tg_id: int, oid: int, active_cou
         _table(f"📋 {'جزئیات دوره' if active_course else ('تمدید' if renewal else 'جزئیات سفارش')} {code}",[
             ('دوره',o['product_title']),('کد سفارش',code),('زمان ثبت',local_dt(o.get('created_at'))),
             ('مبلغ',money(o['amount'])),('وضعیت',order_status_fa(o['status'],renewal)),
-            ('زمان دوره',subscription_time_fa(o.get('days_remaining'))),
+            ('زمان دوره',subscription_time_fa(o.get('days_remaining'),o.get('duration_days'))),
         ]),
         f'🧭 مسیر انجام دوره\n{progress_path(o["status"],renewal)}{active_renewal}',
     ])
@@ -1198,12 +1199,17 @@ async def send_plan_to_customer(m: Message, tg_id: int, oid: int):
             from app.services.fulfillment import channel_link
             link=await channel_link(m.bot,oid,tg_id)
             return await m.answer(f'ورود به کانال (فقط برای همین حساب):\n{link}' if link else 'اعتبار این اشتراک به پایان رسیده است؛ برای ادامه دوره را تمدید کن.')
-        if terms.get('delivery_mode')=='content' and not o.get('plan_file_id'):
-            return await m.answer((terms.get('response_text') or 'محتوای خریداری‌شده:')+'\n\n'+terms.get('content_url',''))
+        if terms.get('delivery_mode')=='content':
+            from app.services.fulfillment import resend_content
+            return await resend_content(m.bot,o,tg_id)
     if not o or not o.get('plan_file_id'):
         return await m.answer('برنامه هنوز آماده نیست یا به حساب شما تعلق ندارد.')
     if o.get('plan_type')=='photo':
         await m.bot.send_photo(tg_id,o['plan_file_id'],caption=f'📥 برنامه سفارش #{oid}',protect_content=True)
+    elif o.get('plan_type')=='sticker':
+        await m.bot.send_sticker(tg_id,o['plan_file_id'],protect_content=True)
+    elif o.get('plan_type') in {'animation','video','audio','voice'}:
+        await getattr(m.bot,'send_'+o['plan_type'])(tg_id,o['plan_file_id'],caption=f'📥 برنامه سفارش #{oid}',protect_content=True)
     else:
         await m.bot.send_document(tg_id,o['plan_file_id'],caption=f'📥 برنامه سفارش #{oid}',protect_content=True)
     if o.get('status')=='ready':

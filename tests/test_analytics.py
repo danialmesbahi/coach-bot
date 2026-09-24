@@ -53,7 +53,7 @@ def test_http_telemetry_size_limit_and_metadata_only(monkeypatch):
         async with TestClient(TestServer(app)) as client:
             assert (await client.post('/error',json={'view':'messages'})).status==200
             assert (await client.post('/error',json={'view':[]})).status==400
-            assert (await client.post('/error',json={'view':'x'*300})).status==413
+            assert (await client.post('/error',json={'view':'x'*2100})).status==413
         assert sum(row[0] for row in telemetry._buckets.values())==1
     asyncio.run(check())
 
@@ -76,4 +76,4 @@ def test_personal_handler_uses_session_identity(monkeypatch):
             await analytics_api.analytics(Request(actor={'role':'staff','staff_id':identity,'permissions':['analytics.self']}))
     asyncio.run(check())
     assert [call.args[0] for call in snapshot.await_args_list]==[1,2]
-    assert keys==['analytics:1:30:all:1','analytics:2:30:all:1']
+    assert keys==['analytics:1:30:all:1:False:False','analytics:2:30:all:1:False:False']

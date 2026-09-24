@@ -12,7 +12,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from ipaddress import ip_address
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 from zoneinfo import ZoneInfo
 from weakref import WeakValueDictionary
 
@@ -28,7 +28,8 @@ from app.db import repositories as repo
 from app.db.core import db
 from app.utils.photos import normalize_photos
 from app.services import staff
-from app.utils.media import BoundedBuffer, _inspect_upload, _sniff_download
+from app.services.content import asset_path, store_upload
+from app.utils.media import BoundedBuffer, _inspect_upload, _sniff_download, message_file
 
 
 settings = get_settings()
@@ -112,7 +113,7 @@ async def security_headers(request: web.Request, handler):
 
 @web.middleware
 async def auth(request: web.Request, handler):
-    public = request.path in {"/", "/health", "/manifest.webmanifest", "/service-worker.js", "/api/config", "/api/auth/password"} or request.path.startswith("/assets/")
+    public = request.path in {"/", "/health", "/manifest.webmanifest", "/service-worker.js", "/api/config", "/api/auth/password"} or request.path.startswith(("/assets/", "/content/"))
     if public:
         return await handler(request)
     actor = await _session_actor(request)
@@ -157,15 +158,24 @@ async def _session_actor(request: web.Request):
 
 @web.middleware
 async def errors(request: web.Request, handler):
+    request_id=secrets.token_hex(8)
+    request['request_id']=request_id
     try:
-        return await handler(request)
-    except web.HTTPException:
+        result=await handler(request)
+        result.headers['X-Request-ID']=request_id
+        if result.status>=500:
+            LOG.error('Request unavailable',extra={'event':f"{getattr(request.match_info.handler,'__name__','request')}.{result.status}",'request_id':request_id})
+        return result
+    except web.HTTPException as exc:
+        exc.headers['X-Request-ID']=request_id
+        if exc.status>=500:
+            LOG.error('Request failed',extra={'event':f"{getattr(request.match_info.handler,'__name__','request')}.{exc.status}",'request_id':request_id})
         raise
     except (json.JSONDecodeError, UnicodeDecodeError):
         return response({"error": "invalid_json"}, 400)
     except Exception:
-        LOG.exception("web request failed", extra={"path": request.path})
-        return response({"error": "server_error"}, 500)
+        LOG.exception("web request failed", extra={"event":getattr(request.match_info.handler,'__name__','request'),"request_id":request_id})
+        return response({"error": "server_error","request_id":request_id}, 500)
 
 
 async def _rate_limited(request: web.Request, scope: str, limit: int, window: int = 60) -> bool:
@@ -563,7 +573,9 @@ def _broadcast_update(app: web.Application, payload: str):
     for queue in tuple(app["realtime_subscribers"]):
         if queue.full():
             queue.get_nowait()
-        queue.put_nowait(payload)
+            queue.put_nowait('{"resync":true}')
+        else:
+            queue.put_nowait(payload)
 
 
 async def _listen_for_updates(app: web.Application):
@@ -609,17 +621,26 @@ async def realtime_events(request: web.Request):
         while True:
             try:
                 payload = await asyncio.wait_for(queue.get(), timeout=20)
+                # One current-session lookup per short, bounded burst, never per row.
+                await asyncio.sleep(0.1)
+                batch = [payload]
+                while not queue.empty() and len(batch) < 32:
+                    batch.append(queue.get_nowait())
                 current_actor = await _session_actor(request)
                 if not current_actor:
                     await result.write(b'event: session-expired\ndata: {}\n\n')
                     break
-                table = json.loads(payload).get('table')
-                needed = {'support_messages':'chats.read', 'users':'identity.read', 'orders':'records.read', 'products':'records.read', 'sales_gate':'sales.manage', 'staff_accounts':'team', 'staff_assignments':'collaboration', 'staff_notes':'collaboration'}.get(table, 'team')
-                if table == 'orders' and staff.can(current_actor, 'sales.read'):
-                    needed = None
-                if not staff.can(current_actor, needed):
-                    continue
-                await result.write(f"event: update\ndata: {payload}\n\n".encode())
+                events = []
+                for payload in batch:
+                    update = json.loads(payload)
+                    table = update.get('table')
+                    needed = {'support_messages':'chats.read', 'users':'identity.read', 'orders':'records.read', 'products':'records.read', 'sales_gate':'sales.manage', 'staff_accounts':'team', 'staff_assignments':'collaboration', 'staff_notes':'collaboration'}.get(table, 'team')
+                    if update.get('resync') or (table == 'orders' and staff.can(current_actor, 'sales.read')):
+                        needed = None
+                    if staff.can(current_actor, needed):
+                        events.append(f"event: update\ndata: {payload}\n\n")
+                if events:
+                    await result.write(''.join(events).encode())
             except TimeoutError:
                 if not await _session_actor(request):
                     await result.write(b'event: session-expired\ndata: {}\n\n')
@@ -701,7 +722,9 @@ async def order_detail(request: web.Request):
     if staff.can(request['actor'], 'orders.read'):
         async with db.acquire() as c:
             last_request = await c.fetchval("SELECT metadata->>'message' FROM audit_logs WHERE target_type='order' AND target_id=$1 AND action='web_needs_info' ORDER BY created_at DESC,id DESC LIMIT 1", row["id"])
+            manual_delivery=await c.fetchrow('SELECT status,error FROM manual_deliveries WHERE order_id=$1',row['id'])
         result["info_request"] = last_request
+        result['manual_delivery']=dict(manual_delivery) if manual_delivery else None
     return response(result)
 
 
@@ -712,6 +735,27 @@ async def order_action(request: web.Request):
     if not isinstance(body, dict):
         return response({"error": "invalid_payload"}, 400)
     action = body.get("action")
+    if action == 'retry_manual_delivery':
+        staff.require(request['actor'],'orders.deliver')
+        if await _rate_limited(request,'retry_delivery',3): return response({'error':'rate_limited'},429)
+        async with db.acquire() as c,c.transaction():
+            changed=await c.fetchval("UPDATE manual_deliveries SET status='queued',next_at=NOW(),error=NULL,attempts=0 WHERE order_id=$1 AND status='paused' RETURNING order_id",order_id)
+            if not changed: return response({'error':'invalid_transition'},409)
+            await staff.audit(c,request['actor'],'manual_delivery_retried','order',order_id)
+        return response({'ok':True})
+    if action == 'retry_delivery':
+        staff.require(request['actor'],'orders.deliver')
+        if await _rate_limited(request,'retry_delivery',3):
+            return response({'error':'rate_limited'},429)
+        async with db.acquire() as c,c.transaction():
+            changed=await c.fetchval('''UPDATE orders SET fulfillment_next_at=NOW(),
+                fulfillment_error=NULL,fulfillment_attempts=0,updated_at=NOW()
+                WHERE id=$1 AND paid_at IS NOT NULL AND NOT fulfillment_done
+                AND fulfillment_error='delivery_paused' RETURNING id''',order_id)
+            if not changed: return response({'error':'invalid_transition'},409)
+            await staff.audit(c,request['actor'],'delivery_retry_requested','order',order_id)
+        request.app['read_cache'].clear()
+        return response({'ok':True})
     if action not in ("approve_receipt", "reject_receipt", "in_progress", "needs_info"):
         return response({"error": "invalid_action"}, 400)
     staff.require(request['actor'], 'payments.review' if action in {'approve_receipt', 'reject_receipt'} else 'orders.review')
@@ -767,14 +811,11 @@ async def upload_plan(request: web.Request):
     if request.app['upload_slots'].locked():
         return response({'error': 'uploads_busy'}, 503)
     try:
-        async with asyncio.timeout(65), request.app['upload_slots'], db.acquire() as c, c.transaction():
-            locked = await c.fetchval('SELECT pg_try_advisory_xact_lock(hashtextextended($1,0))', f'plan-delivery:{order_id}')
-            if not locked:
-                return response({'error': 'delivery_in_progress'}, 409)
-            # Recheck inside the cross-process lock: another coach may have delivered.
-            order = await repo.get_order(order_id)
-            if not order or order['status'] not in {'in_progress', 'ready'}:
-                return response({'error': 'invalid_transition'}, 409)
+        async with asyncio.timeout(900), request.app['upload_slots'], db.acquire() as lock, lock.transaction():
+            if not await lock.fetchval('SELECT pg_try_advisory_xact_lock(hashtextextended($1,0))',f'plan-delivery:{order_id}'):
+                return response({'error':'delivery_in_progress'},409)
+            if await _rate_limited(request,'plan_upload',8):
+                return response({'error':'rate_limited'},429)
             return await _upload_plan(request, order)
     except TimeoutError:
         return response({'error': 'upload_timeout'}, 503)
@@ -783,30 +824,54 @@ async def upload_plan(request: web.Request):
 async def _upload_plan(request, order):
     order_id = order['id']
     reader = await request.multipart()
-    part = await reader.next()
-    if not part or part.name != "file" or not part.filename:
-        return response({"error": "file_required"}, 400)
-    filename = Path(part.filename.replace("\\", "/").rsplit("/", 1)[-1]).name[:150]
-    limit = settings.max_plan_file_mb * 1024 * 1024
-    async with asyncio.timeout(60):
-        chunks, size = [], 0
-        while chunk := await part.read_chunk():
-            size += len(chunk)
-            if size > limit:
-                return response({"error": "file_too_large"}, 413)
-            chunks.append(chunk)
-        payload = b"".join(chunks)
-        if not _inspect_upload(filename, payload):
-            return response({"error": "invalid_file_type"}, 400)
-        async with asyncio.timeout(60):
-            sent = await request.app["bot"].send_document(
-                order["telegram_id"], BufferedInputFile(payload, filename=filename), caption="✅ دوره جدید شما آماده است."
-            )
-    changed = await repo.attach_plan(order_id, sent.document.file_id, filename)
-    if not changed:
-        return response({"error": "save_failed"}, 409)
-    await repo.add_audit(request["actor"], "web_deliver_plan", "order", order_id, {"filename": filename})
-    return response({"ok": True})
+    text_value=''; links=[]; files=[]; committed=False
+    try:
+        while part:=await reader.next():
+            if part.name=='file' and part.filename:
+                if len(files)>=10: return response({'error':'too_many_files'},400)
+                key,filename,size=await store_upload(part,max_bytes=50*1024*1024)
+                files.append((key,filename,size))
+            elif part.name in {'text','links'}:
+                chunks=[];size=0
+                while chunk:=await part.read_chunk(8192):
+                    size+=len(chunk)
+                    if size>32000: return response({'error':'invalid_delivery'},400)
+                    chunks.append(chunk)
+                value=b''.join(chunks)
+                if part.name=='text': text_value=value.decode('utf-8').strip()
+                else: links=json.loads(value)
+        if len(text_value)>4000 or not isinstance(links,list) or len(links)>20 or any(not isinstance(url,str) or not 1<=len(url)<=1500 for url in links):
+            return response({'error':'invalid_delivery'},400)
+        links=[url.strip() for url in links]
+        if any((parts:=urlsplit(url)).scheme!='https' or not parts.hostname or parts.username or parts.password or re.search(r'\s',url) for url in links):
+            return response({'error':'invalid_links'},400)
+        if not (text_value or links or files): return response({'error':'content_required'},400)
+        async with db.acquire() as c,c.transaction():
+            current=await c.fetchrow('SELECT id,status FROM orders WHERE id=$1 FOR UPDATE',order_id)
+            if not current or current['status'] not in {'in_progress','ready'} or await c.fetchval('SELECT 1 FROM manual_deliveries WHERE order_id=$1',order_id):
+                return response({'error':'invalid_transition'},409)
+            await c.execute('INSERT INTO manual_deliveries(order_id) VALUES($1)',order_id)
+            position=0
+            for kind,value in ([('text',text_value)] if text_value else [])+[('link',url) for url in links]:
+                await c.execute('INSERT INTO manual_delivery_items(order_id,position,kind,body) VALUES($1,$2,$3,$4)',order_id,position,kind,value)
+                position+=1
+            for key,filename,size in files:
+                asset_id=await c.fetchval('INSERT INTO product_assets(filename,storage_key,byte_size) VALUES($1,$2,$3) RETURNING id',filename,key,size)
+                await c.execute("INSERT INTO manual_delivery_items(order_id,position,kind,asset_id) VALUES($1,$2,'file',$3)",order_id,position,asset_id)
+                position+=1
+            await staff.audit(c,request['actor'],'web_deliver_plan','order',order_id,{'files':len(files),'links':len(links),'text':bool(text_value)})
+        committed=True
+        return response({'ok':True,'queued':True})
+    except (UnicodeDecodeError,json.JSONDecodeError):
+        return response({'error':'invalid_delivery'},400)
+    except web.HTTPRequestEntityTooLarge:
+        return response({'error':'file_too_large'},413)
+    except web.HTTPBadRequest:
+        return response({'error':'invalid_file_type'},400)
+    finally:
+        if not committed:
+            for key,_,_ in files:
+                asset_path(key).unlink(missing_ok=True)
 
 
 async def threads(request: web.Request):
@@ -913,22 +978,17 @@ async def _send_reply(request: web.Request):
         mime_type, media_kind = inspected
         if media_kind == "image":
             sent = await bot.send_photo(user["telegram_id"], upload, caption=text or None)
-            content_type, file_id = "photo", sent.photo[-1].file_id
         elif media_kind == "animation":
             sent = await bot.send_animation(user["telegram_id"], upload, caption=text or None)
-            content_type, file_id = "animation", sent.animation.file_id
         elif media_kind == "video":
             sent = await bot.send_video(user["telegram_id"], upload, caption=text or None)
-            content_type, file_id = "video", sent.video.file_id
         elif media_kind == "voice":
             sent = await bot.send_voice(user["telegram_id"], upload, caption=text or None)
-            content_type, file_id = "voice", sent.voice.file_id
         elif media_kind == "audio":
             sent = await bot.send_audio(user["telegram_id"], upload, caption=text or None)
-            content_type, file_id = "audio", sent.audio.file_id
         else:
-            sent = await bot.send_document(user["telegram_id"], upload, caption=text or None)
-            content_type, file_id = "document", sent.document.file_id
+            sent = await bot.send_document(user["telegram_id"], upload, caption=text or None,disable_content_type_detection=True)
+        content_type, file_id = message_file(sent)
     else:
         sent = await bot.send_message(user["telegram_id"], text)
     await repo.add_support_message(
@@ -950,7 +1010,7 @@ async def customers(request: web.Request):
             request.query.get("q", ""),
             request.query.get("activity", "all"),
             product_id,
-            request.query.get("sort", "recent"),
+            request.query.get("sort", "joined_desc"),
         ),
         _cached(request, "products", 60, lambda: repo.get_products(active_only=False)),
     )
@@ -966,7 +1026,7 @@ async def customers(request: web.Request):
 async def customer_avatar(request: web.Request):
     user_id = int(request.match_info["user_id"])
     user = await repo.purchaser_identity(user_id)
-    if not user or not user["has_paid_order"]:
+    if not user:
         raise web.HTTPNotFound()
 
     cached = request.app["avatar_cache"].get(user_id)
@@ -1092,6 +1152,7 @@ async def sales(request: web.Request):
 
 async def build_app():
     from app.catalog_api import routes as catalog_routes
+    from app.broadcast_api import routes as broadcast_routes
     from app.analytics_api import analytics, client_error
     from app.services.telemetry import web_metrics, run_telemetry_loop
     await db.connect()
@@ -1103,7 +1164,14 @@ async def build_app():
     app['password_slots'] = asyncio.Semaphore(2)
     app["bot"] = Bot(settings.bot_token)
     app["upload_slots"] = asyncio.Semaphore(4)
+    app['catalog_upload_slots'] = asyncio.Semaphore(2)
+    from app.services.content import purchased_content, content_style
+    app.router.add_get('/content/style.css',content_style)
+    app.router.add_get('/content/{token:[A-Za-z0-9_-]{43}}',purchased_content)
+    app.router.add_post('/content/{token:[A-Za-z0-9_-]{43}}',purchased_content)
+    app["channel_slots"] = asyncio.Semaphore(2)
     app.add_routes(catalog_routes())
+    app.add_routes(broadcast_routes())
     app.router.add_get('/api/analytics', analytics)
     app.router.add_post('/api/analytics/client-error',client_error)
     app['telemetry_task'] = asyncio.create_task(run_telemetry_loop('web'),name='web-telemetry')
@@ -1151,7 +1219,9 @@ async def build_app():
 
 
 def main():
+    from app.services.diagnostics import configure
     logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO), format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    configure('web-api')
     web.run_app(build_app(), host="0.0.0.0", port=8090, access_log=None)
 
 

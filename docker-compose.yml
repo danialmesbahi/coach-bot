@@ -46,6 +46,11 @@ services:
       - .env.live
     environment:
       MIGRATE_ON_START: ${MIGRATE_ON_START:-true}
+      CATALOG_STORAGE: /app/catalog-files
+      DIAGNOSTICS_DIR: /app/diagnostics
+    volumes:
+      - catalogfiles:/app/catalog-files
+      - ./artifacts/diagnostics:/app/diagnostics
     read_only: true
     tmpfs:
       - /tmp
@@ -71,6 +76,11 @@ services:
     environment:
       MIGRATE_ON_START: "false"
       WEB_TRUST_INGRESS: "true"
+      CATALOG_STORAGE: /app/catalog-files
+      DIAGNOSTICS_DIR: /app/diagnostics
+    volumes:
+      - catalogfiles:/app/catalog-files
+      - ./artifacts/diagnostics:/app/diagnostics
     read_only: true
     tmpfs:
       - /tmp
@@ -142,3 +152,4 @@ services:
 volumes:
   pgdata:
   redisdata:
+  catalogfiles:

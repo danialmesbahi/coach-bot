@@ -49,7 +49,7 @@ try {
         '/api/session':session,
         '/api/dashboard':{role:'platform',counts:{active:0,unread:0},sales:{period:'all',orders:0,revenue:0,trend:[]},salesOpen:true,buyers:0,users:0},
         '/api/staff/team':{items:[{id:2,telegram_id:1002,username:'test_support',display_name:'Support teammate',role:'staff',permissions:['chats.read'],status:'active',session_version:1}],total:25,permissions:{'chats.read':['خواندن پیام‌ها','Read conversations'],'chats.reply':['پاسخ به پیام‌ها','Reply to clients']},templates:{support:['chats.read','chats.reply']}},
-        '/api/staff/audit':{items:[{id:1,actor_name:'Test owner',actor_role:'platform',action:'staff_permissions',target_type:'staff',target_id:2,target_name:'Support teammate',created_at:'2026-09-13T10:00:00Z'}],next:null},
+        '/api/analytics':{items:[{id:1,source:'audit',actor_name:'Test owner',actor_role:'platform',action:'product_saved',target:'product',target_id:2,created_at:'2026-09-13T10:00:00Z'},{id:2,source:'message',actor_name:'Admin 2',actor_role:'staff',action:'reply_sent',target:'thread',target_id:9,created_at:'2026-09-13T10:01:00Z'}],page:1,has_more:false},
       };
       if(path==='/api/events')return route.fulfill({status:200,contentType:'text/event-stream',body:': test\n\n'});
       await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(fixtures[path]??{ok:true})});
@@ -90,7 +90,9 @@ try {
     assert.equal(await page.locator('.staff-editor input[type=password]').count(),1);
     await page.getByRole('button',{name:/Cancel|لغو/,exact:true}).click();
     await page.getByRole('button',{name:/Activity log|گزارش فعالیت/,exact:true}).click();
-    await page.getByText('Support teammate',{exact:true}).waitFor();
+    await page.getByText(lang==='fa'?'ذخیره محصول':'Product saved',{exact:true}).waitFor();
+    await page.getByText(lang==='fa'?'ارسال پیام':'Message sent',{exact:true}).waitFor();
+    assert.ok(await dialog.evaluate(el=>el.scrollWidth<=el.clientWidth+1),'activity report overflows');
     await page.getByRole('button',{name:/My profile|پروفایل من/,exact:true}).click();
     const passwordInput=page.locator('.password-control input').last();
     await passwordInput.focus();

@@ -1,5 +1,5 @@
 export type Role = "platform" | "leader" | "staff";
-export type View = "dashboard" | "followups" | "orders" | "messages" | "customers" | "sales" | "catalog" | "analytics";
+export type View = "dashboard" | "followups" | "orders" | "messages" | "customers" | "sales" | "catalog" | "analytics" | "broadcasts";
 export type Lang = "fa" | "en";
 export type SalesPeriod = "day" | "week" | "month" | "all";
 
@@ -51,6 +51,7 @@ export interface ProductOption { id: number; title: string }
 export interface CustomerPage extends PageResult<CustomerListItem> { products: ProductOption[] }
 
 export interface OrderListItem {
+  delivery_mode?: string;
   duration_days?: number;
   subscription_expires_at?: string | null;
   id: number;
@@ -72,6 +73,7 @@ export interface OrderListItem {
 }
 
 export interface OrderDetail extends OrderListItem {
+  manual_delivery?: {status:string;error?:string|null}|null;
   product_snapshot?: {delivery_mode?: string};
   fulfillment_error?: string | null;
   amount: number | string;
@@ -88,7 +90,7 @@ export interface OrderDetail extends OrderListItem {
 }
 
 export interface OrderPage extends PageResult<OrderListItem> {
-  counts: { actionable:number; receipts:number; new_orders:number; designing:number; needs_info:number };
+  counts: { actionable:number; receipts:number; new_orders:number; designing:number; needs_info:number; automatic?:number };
 }
 
 export interface ThreadListItem {
@@ -204,6 +206,7 @@ export interface SalesData {
 }
 
 export interface RealtimeUpdate {
+  resync?: boolean;
   table?: string;
   action?: string;
   id?: number;

@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import "./globals.css";
 import "./catalog.css";
 import "./analytics.css";
+import "./broadcasts.css";
 
 export const metadata: Metadata = {
   title: { default: "Sensi Console", template: "%s · Sensi" },

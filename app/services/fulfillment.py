@@ -8,9 +8,14 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from aiogram import Router
-from aiogram.types import BufferedInputFile, ChatJoinRequest, ChatMemberUpdated
+from aiogram.exceptions import TelegramRetryAfter
+from aiogram.types import BufferedInputFile, FSInputFile, ChatJoinRequest, ChatMemberUpdated
 from app.db.core import db
-from app.services.catalog import object_value
+from app.services.catalog import object_value, duration_label
+from app.services.content import asset_path, content_link
+from app.services.deliveries import process_manual_deliveries
+from app.services.broadcasts import process_broadcasts
+from app.utils.media import message_file
 
 log=logging.getLogger(__name__)
 router=Router(name='paid_channels')
@@ -47,9 +52,9 @@ async def channel_link(bot,order_id,telegram_id):
 
 
 async def fulfill_order(bot,order_id):
-    async with asyncio.timeout(60),db.acquire() as c,c.transaction():
+    async with asyncio.timeout(300),db.acquire() as c,c.transaction():
         row=await c.fetchrow('''SELECT o.*,u.telegram_id FROM orders o JOIN users u ON u.id=o.user_id
-            WHERE o.id=$1 AND o.paid_at IS NOT NULL AND NOT o.fulfillment_done FOR UPDATE OF o SKIP LOCKED''',order_id)
+            WHERE o.id=$1 AND o.paid_at IS NOT NULL AND NOT o.fulfillment_done FOR NO KEY UPDATE OF o SKIP LOCKED''',order_id)
         if not row: return
         terms=object_value(row['product_snapshot'])
         mode=terms.get('delivery_mode','manual')
@@ -62,27 +67,84 @@ async def fulfill_order(bot,order_id):
             if not access:
                 # Renewals extend remaining time instead of discarding the previous subscription.
                 start=await c.fetchval('SELECT GREATEST(NOW(),MAX(expires_at)) FROM channel_access WHERE chat_id=$1 AND telegram_id=$2',chat_id,row['telegram_id'])
-                end=start+timedelta(days=row['duration_days'])
+                end=datetime.max.replace(tzinfo=timezone.utc) if row['duration_days']==0 else start+timedelta(days=row['duration_days'])
                 access=await c.fetchrow('''INSERT INTO channel_access(order_id,chat_id,telegram_id,starts_at,expires_at)
                     VALUES($1,$2,$3,$4,$5) RETURNING *''',order_id,chat_id,row['telegram_id'],start,end)
             link=await _invite(c,bot,access)
-            text+=f"\n\nورود به کانال: {link}\nاین لینک فقط برای همین حساب تلگرام معتبر است.\nاعتبار اشتراک: {row['duration_days']} روز"
+            text+=f"\n\nورود به کانال: {link}\nاین لینک فقط برای همین حساب تلگرام معتبر است.\nاعتبار اشتراک: {duration_label(terms)}"
             await c.execute('UPDATE orders SET subscription_expires_at=$2 WHERE id=$1',order_id,access['expires_at'])
         elif mode=='content':
-            if terms.get('content_url'): text+='\n\n'+terms['content_url']
-            if terms.get('asset_id'):
-                asset=await c.fetchrow('SELECT * FROM product_assets WHERE id=$1',terms['asset_id'])
-                if not asset: raise ValueError('Purchased asset is missing')
-                filename=asset['filename']
-                sent=await bot.send_document(row['telegram_id'],asset['file_id'] or BufferedInputFile(bytes(asset['payload']),filename=filename))
-                file_id=sent.document.file_id
-                await c.execute('UPDATE product_assets SET file_id=$2 WHERE id=$1',asset['id'],file_id)
-        await bot.send_message(row['telegram_id'],text)
+            await send_content(c,bot,row,terms)
+            first=await c.fetchrow('''SELECT d.file_id,a.filename FROM order_content_delivery d
+                JOIN product_assets a ON a.id=d.asset_id WHERE d.order_id=$1 AND d.file_id IS NOT NULL
+                ORDER BY d.delivered_at LIMIT 1''',order_id)
+            if first: file_id,filename=first['file_id'],first['filename']
+        await send_message_once(bot,row,'payment',text)
         await c.execute('''UPDATE orders SET fulfillment_done=true,fulfillment_error=NULL,
             status=CASE WHEN $2='manual' THEN status ELSE 'delivered' END,
             delivered_at=CASE WHEN $2='manual' THEN delivered_at ELSE COALESCE(delivered_at,NOW()) END,
             plan_file_id=COALESCE($3,plan_file_id),plan_file_name=COALESCE($4,plan_file_name),
             plan_type=CASE WHEN $3::text IS NULL THEN plan_type ELSE 'document' END,updated_at=NOW() WHERE id=$1''',order_id,mode,file_id,filename)
+
+
+async def send_content(c,bot,order,terms,replay=False):
+    assets=terms.get('asset_ids') or ([terms['asset_id']] if terms.get('asset_id') else [])
+    urls=terms.get('content_urls') or ([terms['content_url']] if terms.get('content_url') else [])
+    for index,url in enumerate(urls):
+        if replay:
+            await bot.send_message(order['telegram_id'],url,protect_content=True)
+        else:
+            await send_message_once(bot,order,f'url:{index}',url,protect_content=True)
+    for asset_id in assets:
+        if not replay and await c.fetchval('SELECT 1 FROM order_content_delivery WHERE order_id=$1 AND asset_id=$2',order['id'],asset_id):
+            continue
+        asset=await c.fetchrow('SELECT * FROM product_assets WHERE id=$1',asset_id)
+        if not asset: raise ValueError('Purchased asset is missing')
+        file_id=None
+        if not asset['file_id'] and (asset.get('byte_size') or 0)>50*1024*1024:
+            # Commit the grant before sending; it survives a later file failing.
+            async with db.acquire() as delivery:
+                url=await content_link(delivery,order['id'],asset_id)
+            if url: await bot.send_message(order['telegram_id'],asset['filename']+'\n'+url,protect_content=True)
+        else:
+            document=asset['file_id'] or (FSInputFile(asset_path(asset['storage_key']),filename=asset['filename']) if asset.get('storage_key') else BufferedInputFile(bytes(asset['payload']),filename=asset['filename']))
+            sent=await bot.send_document(order['telegram_id'],document,protect_content=True,
+                disable_content_type_detection=True,request_timeout=180)
+            # Telegram can return a sticker/animation for an uploaded document.
+            # It was delivered: checkpoint it, but never cache its ID as a document.
+            kind,sent_id=message_file(sent)
+            file_id=sent_id if kind=='document' else None
+        # Independent per-file checkpoint: retries resume, not restart a large bundle.
+        async with db.acquire() as delivery,delivery.transaction():
+            if file_id: await delivery.execute('UPDATE product_assets SET file_id=$2 WHERE id=$1',asset_id,file_id)
+            await delivery.execute('''INSERT INTO order_content_delivery(order_id,asset_id,file_id) VALUES($1,$2,$3)
+                ON CONFLICT(order_id,asset_id) DO UPDATE SET file_id=COALESCE($3,order_content_delivery.file_id)''',order['id'],asset_id,file_id)
+
+
+async def send_message_once(bot,order,key,text,**options):
+    async with db.acquire() as c:
+        if await c.fetchval('SELECT 1 FROM order_message_delivery WHERE order_id=$1 AND item_key=$2',order['id'],key):
+            return
+    await bot.send_message(order['telegram_id'],text,**options)
+    # Telegram cannot guarantee exactly-once after a process crash between send and checkpoint.
+    async with db.acquire() as c:
+        await c.execute('INSERT INTO order_message_delivery(order_id,item_key) VALUES($1,$2) ON CONFLICT DO NOTHING',order['id'],key)
+
+
+async def resend_content(bot,order,tg_id):
+    if not order.get('paid_at') or order['status']!='delivered': return False
+    if order['duration_days']==-1:
+        await bot.send_message(tg_id,'محتوای این خرید یک‌بار ارسال شده است؛ فایل‌ها را در پیام‌های تحویل همین گفت‌وگو ببینید. برای مشکل دریافت، به پشتیبانی پیام دهید.')
+        return True
+    async with asyncio.timeout(300),db.acquire() as c,c.transaction():
+        if not await c.fetchval('SELECT pg_try_advisory_xact_lock(hashtextextended($1,0))',f'content-resend:{tg_id}'):
+            await bot.send_message(tg_id,'ارسال قبلی هنوز در حال انجام است؛ کمی صبر کنید.')
+            return True
+        if not await c.fetchval('SELECT course_expiry(delivered_at,duration_days,subscription_expires_at)>NOW() FROM orders WHERE id=$1',order['id']):
+            await bot.send_message(tg_id,'اعتبار این خرید پایان یافته است.')
+            return True
+        await send_content(c,bot,{**order,'telegram_id':tg_id},object_value(order['product_snapshot']),replay=True)
+    return True
 
 
 @router.chat_join_request()
@@ -136,6 +198,22 @@ async def check_member(bot,chat_id,user_id):
         await c.execute('UPDATE managed_channels SET last_error=NULL WHERE chat_id=$1 AND last_error IS NOT NULL',chat_id)
 
 
+async def record_delivery_failure(order_id,exc):
+    # A transport timeout may happen AFTER Telegram accepted the send. Only a
+    # definite flood rejection is safe to retry automatically, and never forever.
+    retry=isinstance(exc,TelegramRetryAfter)
+    async with db.acquire() as c:
+        await c.execute('''UPDATE orders SET fulfillment_attempts=fulfillment_attempts+1,
+            fulfillment_next_at=CASE WHEN $2 AND fulfillment_attempts<5
+                THEN NOW()+$3 * INTERVAL '1 second' ELSE 'infinity'::timestamptz END,
+            fulfillment_error=CASE WHEN $2 AND fulfillment_attempts<5
+                THEN 'delivery_retry' ELSE 'delivery_paused' END
+            WHERE id=$1 AND NOT fulfillment_done''',order_id,retry,
+            max(30,exc.retry_after) if retry else 0)
+    log.error('Order delivery failed',exc_info=(type(exc),exc,exc.__traceback__),
+        extra={'order_id':order_id,'event':'delivery_failed'})
+
+
 async def run_fulfillment_loop(bot):
     while True:
         try:
@@ -145,13 +223,11 @@ async def run_fulfillment_loop(bot):
             for row in orders:
                 try:
                     await fulfill_order(bot,row['id'])
-                except Exception:
-                    log.exception('Order fulfillment failed: %s',row['id'])
-                    async with db.acquire() as c:
-                        await c.execute('''UPDATE orders SET fulfillment_attempts=fulfillment_attempts+1,
-                            fulfillment_next_at=NOW()+LEAST(3600,30*power(2,LEAST(fulfillment_attempts,7))) * INTERVAL '1 second',
-                            fulfillment_error='delivery_failed' WHERE id=$1 AND NOT fulfillment_done''',row['id'])
+                except Exception as exc:
+                    await record_delivery_failure(row['id'],exc)
                 await asyncio.sleep(.1)
+            await process_manual_deliveries(bot)
+            await process_broadcasts(bot)
             async with db.acquire() as c:
                 members=await c.fetch('SELECT chat_id,telegram_id FROM channel_members WHERE present AND next_check_at<=NOW() ORDER BY next_check_at LIMIT 30')
             for member in members:

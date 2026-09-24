@@ -2,18 +2,21 @@
 import { SelectMenu } from "@/components/select-menu";
 import { PasswordField } from "@/components/password-field";
 import { Catalog, type CatalogData } from "./catalog";
+import { MediaViewer, type PreviewMedia } from "./media-viewer";
 import Analytics from "./analytics";
+import Broadcasts from "./broadcasts";
+import { DeliveryBundleFields, DeliveryFilePicker, DeliverySelectedFiles } from "./delivery-bundle-fields";
 
 import { chatViewport } from "@/lib/chat-viewport";
 /* eslint-disable @next/next/no-img-element -- Telegram avatars are authenticated same-origin streams. */
 
 import {
   Activity, ArrowLeft, ArrowRight, BarChart3, BellRing, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight,
-  CircleDollarSign, ClipboardList, CreditCard, Download, Dumbbell, FileDown, FileText, HeartPulse, Images, LayoutDashboard, LoaderCircle,
+  CircleDollarSign, ClipboardList, CreditCard, Dumbbell, FileDown, FileText, HeartPulse, Images, LayoutDashboard, LoaderCircle,
   LockKeyhole, LogOut, Menu, MessageCircle, Moon, PackageCheck, Paperclip, Phone, Ruler, Scale, Search, Send,
-  RotateCcw, Sun, Target, UnlockKeyhole, Upload, UserRound, UsersRound, X, ZoomIn, ZoomOut,
+  Sun, Target, UnlockKeyhole, Upload, UserRound, UsersRound, X,
 } from "lucide-react";
-import { FormEvent, Fragment, KeyboardEvent, ReactNode, TouchEvent as ReactTouchEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, Fragment, KeyboardEvent, ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ApiError, api } from "@/lib/api";
 import { can, StaffPanel, CollaborationPanel, LogoutButton } from "./staff-panel";
 import { CopyKey, translator } from "@/lib/i18n";
@@ -28,7 +31,6 @@ type FollowupState = "all" | "unseen" | "seen";
 type FollowupSort = "newest" | "oldest";
 type DrawerState = { type: "order" | "thread" | "customer"; id: number; source?: "sales" | "thread"; focusNotes?: boolean } | null;
 type Connection = "online" | "connecting" | "offline";
-type PreviewMedia = { source: string; kind: "image" | "video" | "audio" | "pdf" | "file"; name?: string };
 
 const avatarSources = new Map<number, string>();
 const avatarLoads = new Map<number, Promise<string>>();
@@ -72,6 +74,7 @@ function loadAvatar(userId: number) {
 const periods: SalesPeriod[] = ["day", "week", "month", "all"];
 const realtimeTables: Record<View, string[]> = {
   analytics: [],
+  broadcasts: [],
   catalog: ["products"],
   dashboard: ["users", "orders", "support_messages", "sales_gate", "staff_assignments", "staff_notes"],
   followups: ["staff_assignments", "staff_notes", "users", "orders"],
@@ -80,8 +83,8 @@ const realtimeTables: Record<View, string[]> = {
   customers: ["users", "orders", "staff_assignments", "staff_notes"],
   sales: ["orders", "users", "products"],
 };
-const statusFa: Record<string, string> = { awaiting_payment:"منتظر پرداخت", awaiting_receipt:"بررسی کارت‌به‌کارت", payment_rejected:"رد رسید", paid:"بررسی اطلاعات", needs_info:"منتظر پاسخ شاگرد", in_progress:"در حال طراحی", ready:"آماده", delivered:"تحویل‌شده", cancelled:"لغوشده" };
-const statusEn: Record<string, string> = { awaiting_payment:"Awaiting payment", awaiting_receipt:"Bank transfer review", payment_rejected:"Receipt rejected", paid:"Review information", needs_info:"Awaiting client reply", in_progress:"In design", ready:"Ready", delivered:"Delivered", cancelled:"Cancelled" };
+const statusFa: Record<string, string> = { automatic:"تحویل خودکار", awaiting_payment:"منتظر پرداخت", awaiting_receipt:"بررسی کارت‌به‌کارت", payment_rejected:"رد رسید", paid:"بررسی اطلاعات", needs_info:"منتظر پاسخ شاگرد", in_progress:"در حال طراحی", ready:"آماده", delivered:"تحویل‌شده", cancelled:"لغوشده" };
+const statusEn: Record<string, string> = { automatic:"Automatic delivery", awaiting_payment:"Awaiting payment", awaiting_receipt:"Bank transfer review", payment_rejected:"Receipt rejected", paid:"Review information", needs_info:"Awaiting client reply", in_progress:"In design", ready:"Ready", delivered:"Delivered", cancelled:"Cancelled" };
 
 function money(value: number | string | undefined, lang: Lang) {
   return `${new Intl.NumberFormat(lang === "fa" ? "fa-IR" : "en-US").format(Number(value ?? 0))} ${lang === "fa" ? "تومان" : "Toman"}`;
@@ -122,7 +125,7 @@ function mediaLabel(type: string | undefined, lang: Lang) {
 function displayName(user: { name?: string; first_name?: string; last_name?: string } | undefined, lang: Lang) {
   return user?.name || [user?.first_name, user?.last_name].filter(Boolean).join(" ") || (lang === "fa" ? "بدون نام" : "Unnamed");
 }
-function initial(name: string) { return Array.from(name.trim())[0] ?? "?"; }
+function initial(name: string) { return name.match(/[\p{L}\p{N}]/u)?.[0] ?? "?"; }
 function orderCode(id: number) { return `ORD-${String(id).padStart(6, "0")}`; }
 function statusText(value: string, lang: Lang) { return (lang === "fa" ? statusFa : statusEn)[value] ?? value ?? "—"; }
 
@@ -134,7 +137,7 @@ function useCustomerAvatar(userId: number) {
 
 function CustomerPhoto({ userId, name }: { userId: number; name: string }) {
   const source = useCustomerAvatar(userId);
-  return <div className="customer-photo"><span className="customer-initial">{initial(name)}</span><small className="customer-code">U{String(userId).padStart(6,"0")}</small>{source && <img src={source} alt="" loading="lazy" decoding="async"/>}</div>;
+  return <span className="customer-photo"><span className="customer-initial">{initial(name)}</span>{source && <img src={source} alt="" loading="lazy" decoding="async"/>}</span>;
 }
 
 function useLocalState<T extends string>(key: string, fallback: T) {
@@ -239,58 +242,11 @@ function Login({ lang }: { lang: Lang }) {
   </main>;
 }
 
-function MediaViewer({ media, lang, onClose }: { media: PreviewMedia; lang: Lang; onClose: () => void }) {
-  const [zoom, setZoom] = useState(1);
-  const [rotation, setRotation] = useState(0);
-  const [pinching, setPinching] = useState(false);
-  const [panning, setPanning] = useState(false);
-  const [position, setPosition] = useState({ x: 0, y: 0 });
-  const pinch = useRef<{ distance: number; zoom: number } | null>(null);
-  const pan = useRef<{ x: number; y: number; originX: number; originY: number } | null>(null);
-  useEffect(() => { const close = (event: globalThis.KeyboardEvent) => { if (event.key === "Escape") onClose(); }; addEventListener("keydown", close); return () => removeEventListener("keydown", close); }, [onClose]);
-  const changeZoom = (next: number) => {
-    setZoom(next);
-    if (next <= 1) setPosition({ x: 0, y: 0 });
-  };
-  const download = `${media.source}${media.source.includes("?") ? "&" : "?"}download=1`;
-  const label = media.name || (lang === "fa" ? "پیوست پیام" : "Message attachment");
-  const touchDistance = (event: ReactTouchEvent) => Math.hypot(event.touches[0].clientX - event.touches[1].clientX, event.touches[0].clientY - event.touches[1].clientY);
-  const startGesture = (event: ReactTouchEvent<HTMLDivElement>) => {
-    if (media.kind !== "image") return;
-    if (event.touches.length === 2) {
-      pan.current = null;
-      pinch.current = { distance: touchDistance(event), zoom };
-      setPanning(false);
-      setPinching(true);
-    } else if (event.touches.length === 1 && zoom > 1) {
-      const touch = event.touches[0];
-      pan.current = { x: touch.clientX, y: touch.clientY, originX: position.x, originY: position.y };
-      setPanning(true);
-    }
-  };
-  const moveGesture = (event: ReactTouchEvent<HTMLDivElement>) => {
-    if (event.touches.length === 2 && pinch.current) {
-      event.preventDefault();
-      changeZoom(Math.min(4, Math.max(.5, pinch.current.zoom * touchDistance(event) / Math.max(1, pinch.current.distance))));
-    } else if (event.touches.length === 1 && pan.current) {
-      event.preventDefault();
-      const touch = event.touches[0];
-      setPosition({ x: pan.current.originX + touch.clientX - pan.current.x, y: pan.current.originY + touch.clientY - pan.current.y });
-    }
-  };
-  const endGesture = (event: ReactTouchEvent<HTMLDivElement>) => {
-    if (event.touches.length < 2) { pinch.current = null; setPinching(false); }
-    if (event.touches.length === 0) { pan.current = null; setPanning(false); }
-  };
-  return <div className="media-viewer" role="dialog" aria-modal="true" aria-label={label} onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-    <header><strong title={label}>{label}</strong><div>{media.kind === "image" && <><button onClick={() => changeZoom(Math.max(.5, zoom - .25))} aria-label={lang === "fa" ? "کوچک‌نمایی" : "Zoom out"}><ZoomOut/></button><button onClick={() => changeZoom(Math.min(4, zoom + .25))} aria-label={lang === "fa" ? "بزرگ‌نمایی" : "Zoom in"}><ZoomIn/></button><button onClick={() => setRotation((value) => value + 90)} aria-label={lang === "fa" ? "چرخاندن" : "Rotate"}><RotateCcw/></button></>}<a href={download} download aria-label={lang === "fa" ? "دانلود" : "Download"}><Download/></a><button onClick={onClose} aria-label={lang === "fa" ? "بستن" : "Close"}><X/></button></div></header>
-    <div className={`media-viewer__stage${media.kind === "image" ? " media-viewer__stage--image" : ""}`} onTouchStart={startGesture} onTouchMove={moveGesture} onTouchEnd={endGesture} onTouchCancel={endGesture}>{media.kind === "image" ? <img className={pinching || panning ? "is-gesturing" : undefined} src={media.source} alt={label} style={{ transform:`translate3d(${position.x}px,${position.y}px,0) scale(${zoom}) rotate(${rotation}deg)` }}/> : media.kind === "video" ? <video src={media.source} controls autoPlay playsInline/> : media.kind === "audio" ? <audio src={media.source} controls autoPlay/> : media.kind === "pdf" ? <iframe src={media.source} title={label}/> : <div className="media-viewer__file"><FileText/><strong>{label}</strong><a className="button primary" href={download} download><Download/>{lang === "fa" ? "دانلود امن فایل" : "Download file"}</a></div>}</div>
-  </div>;
-}
 
 function Drawer({ state, session, lang, t, realtimeVersion, onClose, onChanged, onNavigate }: { state: Exclude<DrawerState, null>; session: Session; lang: Lang; t: (key: CopyKey) => string; realtimeVersion: number; onClose: () => void; onChanged: () => void; onNavigate: (state:DrawerState) => void }) {
   const ref = useRef<HTMLDialogElement>(null);
   const customerScroll = useRef(0);
+  const read = useRef<AbortController | null>(null);
   const [data, setData] = useState<OrderDetail | ThreadDetailData | CustomerDetailData>();
   const [selectedCustomerOrder, setSelectedCustomerOrder] = useState<OrderDetail>();
   const [preview, setPreview] = useState<PreviewMedia>();
@@ -301,12 +257,14 @@ function Drawer({ state, session, lang, t, realtimeVersion, onClose, onChanged, 
   }, [selectedCustomerOrder, state.type]);
   const load = useCallback(async () => {
     void realtimeVersion;
+    read.current?.abort();
+    const controller = new AbortController(); read.current = controller;
     const path = state.type === "order" ? `/api/orders/${state.id}` : state.type === "thread" ? `/api/threads/${state.id}` : `/api/customers/${state.id}`;
-    try { setError(false); setData(await api(path, session.csrf)); } catch { setError(true); }
+    try { setError(false); const result = await api<OrderDetail | ThreadDetailData | CustomerDetailData>(path, session.csrf, {signal:controller.signal}); if (!controller.signal.aborted) setData(result); } catch { if (!controller.signal.aborted) setError(true); }
   }, [realtimeVersion, session.csrf, state]);
   // Fetching is tied to the modal lifecycle; updates happen after the request resolves.
   // eslint-disable-next-line react-hooks/set-state-in-effect
-  useEffect(() => { if (!ref.current?.open) ref.current?.showModal(); load(); }, [load]);
+  useEffect(() => { if (!ref.current?.open) ref.current?.showModal(); void load(); return () => read.current?.abort(); }, [load]);
   useLayoutEffect(() => {
     const body = document.body, root = document.documentElement, y = scrollY;
     const previous = { position:body.style.position, top:body.style.top, width:body.style.width, overflow:body.style.overflow, height:body.style.height, minHeight:body.style.minHeight };
@@ -338,7 +296,7 @@ function Drawer({ state, session, lang, t, realtimeVersion, onClose, onChanged, 
   const goBack = () => selectedCustomerOrder ? backToCustomer() : isProfile && state.source === "thread" ? onNavigate({type:"thread",id:state.id}) : ref.current?.close();
   return <dialog className={`drawer${isProfile ? ` profile-dialog${state.source === "thread" ? " from-thread" : ""}` : isChat ? " chat-dialog" : isWork ? ` order-dialog${state.source === "sales" ? " sales-order-dialog" : ""}` : ""}`} ref={ref} onClose={onClose} onClick={(event) => { if (event.target === ref.current) ref.current.close(); }}>
     <div className="drawer-inner">
-      <header>{isProfile || isChat || isWork ? <><button className="icon-button drawer-desktop-close" onClick={() => ref.current?.close()} aria-label={t("close")}><X /></button><button className="drawer-mobile-back" onClick={goBack} aria-label={lang === "fa" ? "بازگشت" : "Back"}>{lang === "fa" ? <ArrowRight/> : <ArrowLeft/>}<span>{lang === "fa" ? "بازگشت" : "Back"}</span></button></> : <button className="icon-button drawer-desktop-close" onClick={() => ref.current?.close()} aria-label={t("close")}><X /></button>}{chatData ? <button type="button" className="chat-dialog-person" onClick={() => onNavigate({type:"customer",id:chatData.user.id,source:"thread"})} aria-label={lang==="fa"?`نمایش پروفایل ${displayName(chatData.user,lang)}`:`Open ${displayName(chatData.user,lang)} profile`}><ConversationAvatar userId={chatData.user.id} name={displayName(chatData.user, lang)}/><div><h2>{displayName(chatData.user, lang)}</h2><span dir="ltr">{chatData.user.username ? `@${chatData.user.username}` : `U${String(chatData.user.id).padStart(6,"0")}`}</span></div></button> : <h2>{selectedCustomerOrder ? orderCode(selectedCustomerOrder.id) : state.type === "order" ? orderCode(state.id) : state.type === "thread" ? t("conversation") : t("profile")}</h2>}</header>
+      <header>{isProfile || isChat || isWork ? <><button className="icon-button drawer-desktop-close" onClick={() => ref.current?.close()} aria-label={t("close")}><X /></button><button className="drawer-mobile-back" onClick={goBack} aria-label={lang === "fa" ? "بازگشت" : "Back"}>{lang === "fa" ? <ArrowRight/> : <ArrowLeft/>}<span>{lang === "fa" ? "بازگشت" : "Back"}</span></button></> : <button className="icon-button drawer-desktop-close" onClick={() => ref.current?.close()} aria-label={t("close")}><X /></button>}{chatData ? <button type="button" className="chat-dialog-person" disabled={!can(session,"customers.read")} onClick={() => onNavigate({type:"customer",id:chatData.user.id,source:"thread"})} aria-label={lang==="fa"?`نمایش پروفایل ${displayName(chatData.user,lang)}`:`Open ${displayName(chatData.user,lang)} profile`}><ConversationAvatar userId={chatData.user.id} name={displayName(chatData.user, lang)}/><div><h2>{displayName(chatData.user, lang)}</h2><span dir="ltr">{chatData.user.username ? `@${chatData.user.username}` : `U${String(chatData.user.id).padStart(6,"0")}`}</span></div></button> : <h2>{selectedCustomerOrder ? orderCode(selectedCustomerOrder.id) : state.type === "order" ? orderCode(state.id) : state.type === "thread" ? t("conversation") : t("profile")}</h2>}</header>
       {!data && !error && <Skeleton />}{error && <Empty text={t("error")} />}
       {data && state.type === "order" && <OrderDrawer data={data as OrderDetail} session={session} realtimeVersion={realtimeVersion} initialNotesOpen={state.focusNotes} lang={lang} t={t} action={action} onPreview={setPreview} onConversation={() => onNavigate({type:"thread",id:(data as OrderDetail).customer_id ?? (data as OrderDetail).user_id!})} />}
       {data && state.type === "thread" && <ThreadDrawer session={session} data={data as ThreadDetailData} id={state.id} realtimeVersion={realtimeVersion} initialNotesOpen={state.focusNotes} lang={lang} t={t} action={action} previewOpen={Boolean(preview)} onPreview={setPreview} />}
@@ -350,33 +308,52 @@ function Drawer({ state, session, lang, t, realtimeVersion, onClose, onChanged, 
 
 function OrderDrawer({ data: o, session, realtimeVersion, initialNotesOpen=false, lang, t, action, onPreview, onConversation, readOnly = false }: { data: OrderDetail; session: Session; realtimeVersion:number; initialNotesOpen?:boolean; lang: Lang; t: (key: CopyKey) => string; action: (path: string, init: RequestInit) => Promise<void>; onPreview: (media: PreviewMedia) => void; onConversation: () => void; readOnly?: boolean }) {
   const f = o.form_snapshot ?? {};
-  const [info, setInfo] = useState(""); const [fileName, setFileName] = useState(""); const [busy, setBusy] = useState(false); const [feedback, setFeedback] = useState<"success" | "error" | "notification">(); const [requestOpen,setRequestOpen] = useState(false);
+  const [info, setInfo] = useState(""); const [selectedFiles,setSelectedFiles]=useState<File[]>([]); const [deliveryText,setDeliveryText]=useState("");const [deliveryLinks,setDeliveryLinks]=useState<string[]>([]); const [busy, setBusy] = useState(false); const [feedback, setFeedback] = useState<"success" | "error" | "notification">(); const [requestOpen,setRequestOpen] = useState(false);
   const copy = lang === "fa" ? { workspace:"فضای انجام کار", next:"اقدام بعدی", details:"اطلاعات موردنیاز طراحی", photos:"عکس‌های این سفارش", receipt:"رسید پرداخت", openReceipt:"نمایش رسید کامل", approved:"تغییر با موفقیت ثبت شد", failed:"عملیات انجام نشد؛ دوباره تلاش کنید.", request:"اطلاعات تکمیلی", delivery:"تحویل برنامه", resume:"ادامه طراحی و آماده‌سازی فایل" } : { workspace:"Work workspace", next:"Next action", details:"Design brief", photos:"Order photos", receipt:"Payment receipt", openReceipt:"Open full receipt", approved:"Change saved successfully", failed:"The action failed. Please try again.", request:"Additional information", delivery:"Plan delivery", resume:"Continue design and prepare the file" };
   const automatic = Boolean(o.product_snapshot?.delivery_mode && o.product_snapshot.delivery_mode !== "manual");
   const manualReceipt = o.status === "awaiting_receipt" && o.payment_method === "card_to_card";
   const isPaid = o.payment_status === "paid" || Boolean(o.paid_at);
-  const steps = lang === "fa" ? ["پرداخت", "بررسی اطلاعات", "طراحی", "تحویل"] : ["Payment", "Review", "Design", "Delivery"];
-  const step = o.status === "delivered" ? 3 : ["in_progress","ready"].includes(o.status) ? 2 : isPaid ? 1 : 0;
-  const next = manualReceipt ? (lang === "fa" ? "رسید کارت‌به‌کارت را بررسی کنید" : "Review the bank transfer receipt") : o.status === "paid" ? (lang === "fa" ? "اطلاعات و عکس‌ها را بررسی کنید" : "Review the brief and photos") : o.status === "needs_info" ? (lang === "fa" ? "پاسخ شاگرد را بررسی کنید" : "Check the client’s reply") : o.status === "in_progress" ? copy.resume : (lang === "fa" ? statusFa[o.status] : statusEn[o.status]);
+  const steps = automatic ? (lang === "fa" ? ["پرداخت", "تحویل خودکار"] : ["Payment", "Automatic delivery"]) : (lang === "fa" ? ["پرداخت", "بررسی اطلاعات", "طراحی", "تحویل"] : ["Payment", "Review", "Design", "Delivery"]);
+  const step = automatic ? (isPaid ? 1 : 0) : o.status === "delivered" ? 3 : ["in_progress","ready"].includes(o.status) ? 2 : isPaid ? 1 : 0;
+  const next = manualReceipt ? (lang === "fa" ? "رسید کارت‌به‌کارت را بررسی کنید" : "Review the bank transfer receipt") : automatic ? (o.status === "delivered" ? (lang === "fa" ? "تحویل انجام شده" : "Delivered") : isPaid ? (lang === "fa" ? "در انتظار تحویل خودکار" : "Awaiting automatic delivery") : (lang === "fa" ? "در انتظار پرداخت" : "Awaiting payment")) : o.status === "paid" ? (lang === "fa" ? "اطلاعات و عکس‌ها را بررسی کنید" : "Review the brief and photos") : o.status === "needs_info" ? (lang === "fa" ? "پاسخ شاگرد را بررسی کنید" : "Check the client’s reply") : o.status === "in_progress" ? copy.resume : (lang === "fa" ? statusFa[o.status] : statusEn[o.status]);
   const submit = async (task: () => Promise<void>) => { if (busy) return; setBusy(true); setFeedback(undefined); try { await task(); setFeedback("success"); setRequestOpen(false); setInfo(""); } catch (error) { setFeedback(error instanceof Error && error.message === "notification_failed" ? "notification" : "error"); } finally { setBusy(false); } };
   const userId = o.customer_id ?? o.user_id;
   return <div className="order-workspace order-workspace-v2">
-    {automatic&&<p className="order-payment-note">{o.fulfillment_error?(lang==="fa"?"ارسال خودکار ناموفق بود؛ سامانه دوباره تلاش می‌کند. دسترسی کانال و فایل دوره را بررسی کن.":"Automatic delivery failed and will retry. Check the channel permissions and product file."):(lang==="fa"?"تحویل این سفارش پس از تأیید پرداخت به‌صورت خودکار انجام می‌شود.":"This order is fulfilled automatically after payment verification.")}</p>}
+    {automatic&&<p className="order-payment-note">{o.fulfillment_error?(o.fulfillment_error==="delivery_retry"?(lang==="fa"?"تلگرام موقتاً ارسال را محدود کرده؛ تلاش مجدد زمان‌بندی شده است.":"Telegram rate-limited delivery; a retry is scheduled."):(lang==="fa"?"تحویل متوقف شده تا پیام تکراری ارسال نشود. قبل از تلاش مجدد، پیام‌های دریافتی و خطای ثبت‌شده را بررسی کن.":"Delivery is paused to prevent duplicate messages. Check received messages and diagnostics before retrying.")):(lang==="fa"?"تحویل این سفارش پس از تأیید پرداخت به‌صورت خودکار انجام می‌شود.":"This order is fulfilled automatically after payment verification.")}</p>}
+    {o.fulfillment_error==="delivery_paused"&&!readOnly&&can(session,"orders.deliver")&&<section className="order-actions"><button className="button secondary" disabled={busy} onClick={()=>confirm(lang==="fa"?"پیام‌های قبلی بررسی شده‌اند؟ اگر ارسال قبلی ثبت نشده باشد، ممکن است دوباره ارسال شود.":"Have you checked previous messages? An unrecorded delivery may be sent again.")&&submit(()=>action(`/api/orders/${o.id}/action`,{method:"POST",body:JSON.stringify({action:"retry_delivery"})}))}>{lang==="fa"?"تلاش مجدد برای تحویل":"Retry delivery"}</button>{feedback&&<p role="status">{feedback==="success"?copy.approved:copy.failed}</p>}</section>}
     {Array.isArray(f.custom_answers)&&<section className="profile-section"><h3>{lang==="fa"?"پاسخ‌های اختصاصی این دوره":"Product questionnaire"}</h3><div className="profile-facts">{(f.custom_answers as Array<{question:string;answer:string}>).map((answer,index)=><ProfileFact key={index} icon={<FileText/>} label={answer.question} value={answer.answer} wide/>)}</div></section>}
-    <ol className="order-steps" aria-label={lang === "fa" ? "مسیر انجام دوره" : "Order progress"}>{steps.map((label,index) => <li key={label} className={index < step ? "done" : index === step ? "current" : ""} aria-current={index === step ? "step" : undefined}><b>{index < step ? <Check/> : index+1}</b><span>{label}</span></li>)}</ol>
-    <section className={`order-work-hero status-${o.status}`}><div><span>{copy.workspace}</span><bdi>{orderCode(o.id)}</bdi><h3>{o.product_title}</h3><p>{copy.next} · <strong>{next}</strong></p></div><Status value={o.status} lang={lang}/></section>
+    <ol className="order-steps" style={{gridTemplateColumns:`repeat(${steps.length}, minmax(0, 1fr))`}} aria-label={lang === "fa" ? "مسیر انجام دوره" : "Order progress"}>{steps.map((label,index) => <li key={label} className={index < step ? "done" : index === step ? "current" : ""} aria-current={index === step ? "step" : undefined}><b>{index < step ? <Check/> : index+1}</b><span>{label}</span></li>)}</ol>
+    <section className={`order-work-hero status-${o.status}`}><div><span>{copy.workspace}</span><bdi>{orderCode(o.id)}</bdi><h3>{o.product_title}</h3><p>{copy.next} · <strong>{next}</strong></p></div><Status value={automatic && o.status==="paid" ? "automatic" : o.status} lang={lang}/></section>
     <section className="order-client-strip">{userId ? <ConversationAvatar userId={userId} name={displayName(o,lang)}/> : <span className="conversation-avatar" aria-hidden="true">{initial(displayName(o,lang))}</span>}<div><small>{t("customer")}</small><strong>{displayName(o,lang)}</strong><span dir="ltr">{o.username ? `@${o.username}` : o.telegram_id ? `ID ${o.telegram_id}` : o.phone ?? "—"}</span></div><dl><div><dt>{t("amount")}</dt><dd>{money(o.amount,lang)}</dd></div><div><dt>{t("created")}</dt><dd>{formatDate(o.created_at,lang,true)}</dd></div></dl></section>
     {can(session,"orders.read")&&<CollaborationPanel kind="order" id={o.id} session={session} lang={lang} version={realtimeVersion} initialOpen={initialNotesOpen}/>}
     {isPaid && <div className="order-payment-note"><Check/><span>{o.payment_method === "zarinpal" ? (lang === "fa" ? "پرداخت توسط زرین‌پال تأیید شده؛ تأیید دستی لازم نیست." : "Payment verified by ZarinPal. No manual approval needed.") : (lang === "fa" ? "پرداخت این سفارش تأیید شده است." : "Payment confirmed.")}{o.gateway_ref && <small>{lang === "fa" ? "کد پیگیری: " : "Reference: "}<bdi>{o.gateway_ref}</bdi></small>}</span></div>}
     {o.status === "needs_info" && <section className="order-waiting"><MessageCircle/><div><strong>{lang === "fa" ? "منتظر اطلاعات تکمیلی" : "Waiting for information"}</strong><p>{o.info_request || (lang === "fa" ? "پاسخ شاگرد را در گفت‌وگو بررسی کنید و پس از کامل شدن اطلاعات، طراحی را شروع کنید." : "Read the client’s reply, then start design once the brief is complete.")}</p>{userId && <button className="button secondary" disabled={!can(session,"chats.read")} onClick={onConversation}><MessageCircle/>{lang === "fa" ? "دیدن گفت‌وگو و پاسخ‌ها" : "Open conversation"}</button>}</div></section>}
     {can(session,"payments.review") && manualReceipt && o.receipt_file_id && <section className="order-receipt"><header><CreditCard/><div><h3>{lang === "fa" ? "رسید کارت‌به‌کارت" : "Bank transfer receipt"}</h3><span>{orderCode(o.id)}</span></div></header>{o.receipt_type === "photo" ? <button onClick={() => onPreview({ source:`/media/orders/${o.id}/receipt`, kind:"image", name:copy.receipt })}><img src={`/media/orders/${o.id}/receipt`} alt={copy.receipt} decoding="async"/><span>{copy.openReceipt}<FileDown/></span></button> : <button className="message-file" onClick={() => onPreview({ source:`/media/orders/${o.id}/receipt`, kind:"file", name:copy.receipt })}><FileDown/><span>{copy.openReceipt}</span></button>}</section>}
-    <section className="profile-section order-brief"><header><div><UserRound/><h3>{copy.details}</h3></div></header><div className="profile-facts"><ProfileFact icon={<CalendarDays/>} label={t("age")} value={String(f.age ?? "—")}/><ProfileFact icon={<UserRound/>} label={t("gender")} value={String(f.gender ?? "—")}/><ProfileFact icon={<Ruler/>} label={t("height")} value={f.height_cm ? `${f.height_cm} cm` : "—"}/><ProfileFact icon={<Scale/>} label={t("weight")} value={f.weight_kg ? `${f.weight_kg} kg` : "—"}/><ProfileFact icon={<Target/>} label={t("goal")} value={String(f.goal ?? "—")} wide/><ProfileFact icon={<Dumbbell/>} label={t("history")} value={String(f.training_history ?? "—")} wide/>{f.notes ? <ProfileFact icon={<Activity/>} label={t("notes")} value={String(f.notes)} wide/> : null}</div></section>
-    <section className="profile-section"><header><div><HeartPulse/><h3>{lang === "fa" ? "تغذیه و محدودیت‌ها" : "Nutrition & restrictions"}</h3></div></header><div className="profile-facts">{[["allergy",lang === "fa" ? "حساسیت‌ها" : "Allergies"],["restriction",lang === "fa" ? "محدودیت‌ها" : "Restrictions"],["supplements",lang === "fa" ? "مکمل‌ها" : "Supplements"]].map(([key,label]) => <ProfileFact key={key} icon={<HeartPulse/>} label={label} value={String(f[key] || (lang === "fa" ? "ثبت نشده" : "Not provided"))} wide/>)}</div></section>
-    <section className="profile-section"><header><div><Images/><h3>{copy.photos}</h3></div><span>{o.photo_count ?? 0}</span></header>{(o.photo_count ?? 0) > 0 ? <PhotoGallery count={o.photo_count!} source={(index) => `/media/orders/${o.id}/photos/${index}`} lang={lang} onPreview={onPreview}/> : <p className="order-photo-empty">{lang === "fa" ? "عکسی برای این سفارش ثبت نشده است." : "No photos attached to this order."}</p>}</section>
+    {(!automatic || ["age","gender","height_cm","weight_kg","goal","training_history","notes"].some(key=>Boolean(f[key]))) && <section className="profile-section order-brief"><header><div><UserRound/><h3>{copy.details}</h3></div></header><div className="profile-facts"><ProfileFact icon={<CalendarDays/>} label={t("age")} value={String(f.age ?? "—")}/><ProfileFact icon={<UserRound/>} label={t("gender")} value={String(f.gender ?? "—")}/><ProfileFact icon={<Ruler/>} label={t("height")} value={f.height_cm ? `${f.height_cm} cm` : "—"}/><ProfileFact icon={<Scale/>} label={t("weight")} value={f.weight_kg ? `${f.weight_kg} kg` : "—"}/><ProfileFact icon={<Target/>} label={t("goal")} value={String(f.goal ?? "—")} wide/><ProfileFact icon={<Dumbbell/>} label={t("history")} value={String(f.training_history ?? "—")} wide/>{f.notes ? <ProfileFact icon={<Activity/>} label={t("notes")} value={String(f.notes)} wide/> : null}</div></section>}
+    {(!automatic || ["allergy","restriction","supplements"].some(key=>Boolean(f[key]))) && <section className="profile-section"><header><div><HeartPulse/><h3>{lang === "fa" ? "تغذیه و محدودیت‌ها" : "Nutrition & restrictions"}</h3></div></header><div className="profile-facts">{[["allergy",lang === "fa" ? "حساسیت‌ها" : "Allergies"],["restriction",lang === "fa" ? "محدودیت‌ها" : "Restrictions"],["supplements",lang === "fa" ? "مکمل‌ها" : "Supplements"]].map(([key,label]) => <ProfileFact key={key} icon={<HeartPulse/>} label={label} value={String(f[key] || (lang === "fa" ? "ثبت نشده" : "Not provided"))} wide/>)}</div></section>}
+    {(!automatic || (o.photo_count ?? 0) > 0) && <section className="profile-section"><header><div><Images/><h3>{copy.photos}</h3></div><span>{o.photo_count ?? 0}</span></header>{(o.photo_count ?? 0) > 0 ? <PhotoGallery count={o.photo_count!} source={(index) => `/media/orders/${o.id}/photos/${index}`} lang={lang} onPreview={onPreview}/> : <p className="order-photo-empty">{lang === "fa" ? "عکسی برای این سفارش ثبت نشده است." : "No photos attached to this order."}</p>}</section>}
     {!readOnly && (!automatic || manualReceipt) && ["orders.review","orders.deliver","payments.review"].some(p=>can(session,p)) && (manualReceipt || ["paid","needs_info","in_progress","ready"].includes(o.status)) && <section className="order-actions"><header><ClipboardList/><div><h3>{copy.next}</h3><p>{next}</p></div></header>{feedback && <p className={`action-feedback ${feedback === "success" ? "success" : "error"}`} role="status">{feedback === "success" ? copy.approved : feedback === "notification" ? (lang === "fa" ? "وضعیت ذخیره شد، اما پیام تلگرام ارسال نشد. از گفت‌وگوی شاگرد دوباره پیام بدهید." : "Status saved, but Telegram delivery failed. Send the message again from the conversation.") : copy.failed}</p>}<div className="action-stack">
       {can(session,"payments.review") && manualReceipt && <><button disabled={busy} className="button success" onClick={() => submit(() => action(`/api/orders/${o.id}/action`, { method:"POST", body:JSON.stringify({ action:"approve_receipt" }) }))}>{busy ? <LoaderCircle className="spin"/> : <Check/>}{t("approve")}</button><button disabled={busy} className="button danger" onClick={() => confirm(t("reject")) && submit(() => action(`/api/orders/${o.id}/action`, { method:"POST", body:JSON.stringify({ action:"reject_receipt" }) }))}><X/>{t("reject")}</button></>}
       {can(session,"orders.review") && ["paid","needs_info"].includes(o.status) && <button disabled={busy} className="button primary" onClick={() => submit(() => action(`/api/orders/${o.id}/action`, { method:"POST", body:JSON.stringify({ action:"in_progress" }) }))}>{busy ? <LoaderCircle className="spin"/> : <Check/>}{lang === "fa" ? "تأیید اطلاعات و شروع طراحی" : "Approve information & start design"}</button>}
-      {can(session,"orders.deliver") && ["in_progress","ready"].includes(o.status) && <form className="upload-form" onSubmit={(event) => { event.preventDefault(); const element=event.currentTarget; const form = new FormData(element); submit(async () => { await action(`/api/orders/${o.id}/plan`, { method:"POST", body:form }); element.reset(); setFileName(""); }); }}><div className="upload-title"><Upload/><div><strong>{copy.delivery}</strong><span>{lang === "fa" ? "فایل نهایی مستقیماً برای شاگرد ارسال می‌شود." : "The final file will be sent directly to the client."}</span></div></div><label className="file-picker"><Upload/><span>{fileName || t("chooseFile")}</span><input name="file" type="file" accept=".pdf,.doc,.docx,.xlsx,.jpg,.jpeg,.png" disabled={busy} onChange={(event) => setFileName(event.currentTarget.files?.[0]?.name ?? "")} required /></label><button disabled={busy || !fileName} className="button primary" type="submit">{busy ? <LoaderCircle className="spin"/> : <Send/>}{lang === "fa" ? "ارسال فایل و تحویل دوره" : "Send file & complete order"}</button></form>}
+      {can(session,"orders.deliver") && ["in_progress","ready"].includes(o.status) && (
+        o.manual_delivery ? <div className="manual-delivery-state" role="status"><PackageCheck/><span>{o.manual_delivery.status==="paused"?(lang==="fa"?"ارسال متوقف شده؛ بخش‌های ارسال‌شده دوباره فرستاده نمی‌شوند.":"Delivery paused; sent parts will not be resent."):(lang==="fa"?"بستهٔ برنامه در صف ارسال است.":"Delivery bundle is queued.")}</span>{o.manual_delivery.status==="paused"&&<button type="button" disabled={busy} className="button secondary" onClick={()=>submit(()=>action(`/api/orders/${o.id}/action`,{method:"POST",body:JSON.stringify({action:"retry_manual_delivery"})}))}>{lang==="fa"?"ادامهٔ ارسال":"Resume delivery"}</button>}</div>
+        : <form className="upload-form delivery-bundle" onSubmit={event=>{
+          event.preventDefault();
+          const element=event.currentTarget,form=new FormData(element);
+          form.set("text",deliveryText);
+          form.set("links",JSON.stringify(deliveryLinks.filter(link=>link.trim()).map(link=>link.trim())));
+          for(const file of selectedFiles)form.append("file",file);
+          submit(async()=>{await action(`/api/orders/${o.id}/plan`,{method:"POST",body:form});element.reset();setSelectedFiles([]);setDeliveryText("");setDeliveryLinks([]);});
+        }}>
+          <div className="upload-title"><Upload/><div><strong>{copy.delivery}</strong><span>{lang==="fa"?"پیام، چند فایل و لینک را با هم یا جداگانه بفرست.":"Send a message, files and links together or separately."}</span></div></div>
+          <DeliveryBundleFields lang={lang} message={deliveryText} onMessageChange={setDeliveryText} links={deliveryLinks} onLinksChange={setDeliveryLinks} maxLength={4000} disabled={busy}>
+            <DeliveryFilePicker lang={lang} count={selectedFiles.length} description={lang==="fa"?"این فایل‌ها پس از تأیید شما برای شاگرد فرستاده می‌شوند.":"These files are sent to the client after you confirm."} disabled={busy} onFiles={files=>setSelectedFiles(old=>[...old,...files])}/>
+            <DeliverySelectedFiles files={selectedFiles} lang={lang} onRemove={index=>setSelectedFiles(old=>old.filter((_,i)=>i!==index))} onPreview={onPreview}/>
+            {(selectedFiles.length>10||selectedFiles.some(file=>file.size>50*1048576))&&<p className="staff-feedback error" role="alert">{lang==="fa"?"برای هر تحویل حداکثر ۱۰ فایل، هر کدام تا ۵۰ مگابایت انتخاب کن.":"Choose up to 10 files per delivery, each up to 50 MB."}</p>}
+          </DeliveryBundleFields>
+          <button disabled={busy||selectedFiles.length>10||selectedFiles.some(file=>file.size>50*1048576)||!(deliveryText.trim()||deliveryLinks.some(link=>link.trim())||selectedFiles.length)} className="button primary" type="submit">{busy?<LoaderCircle className="spin"/>:<Send/>}{lang==="fa"?"ثبت و ارسال بستهٔ برنامه":"Queue delivery bundle"}</button>
+        </form>
+      )}
       {can(session,"orders.review") && ["paid","in_progress"].includes(o.status) && <button className="button secondary" disabled={busy} aria-expanded={requestOpen} aria-controls="order-request-form" onClick={() => setRequestOpen(!requestOpen)}><MessageCircle/>{lang === "fa" ? "درخواست اطلاعات بیشتر" : "Request more information"}<ChevronDown/></button>}
       {can(session,"orders.review") && requestOpen && ["paid","in_progress"].includes(o.status) && <form id="order-request-form" onSubmit={(event) => { event.preventDefault(); if (info.trim()) submit(() => action(`/api/orders/${o.id}/action`, { method:"POST", body:JSON.stringify({ action:"needs_info", message:info.trim() }) })); }} className="inline-form"><div><label htmlFor="order-info-request">{t("requestText")}</label></div><textarea id="order-info-request" value={info} maxLength={1000} onChange={(event) => setInfo(event.target.value)} placeholder={lang === "fa" ? "مثلاً: لطفاً سابقه آسیب‌دیدگی و عکس پشت بدن را بفرست." : "For example: please send your injury history and a back photo."} required/><button disabled={busy || !info.trim()} className="button secondary" type="submit"><Send/>{lang === "fa" ? "ارسال درخواست به شاگرد" : "Send request to client"}</button><button disabled={busy} className="button secondary" type="button" onClick={() => setRequestOpen(false)}>{lang === "fa" ? "انصراف" : "Cancel"}</button></form>}
       {userId && o.status !== "needs_info" && <button className="button secondary" disabled={busy || !can(session,"chats.read")} onClick={onConversation}><MessageCircle/>{lang === "fa" ? "گفت‌وگو با شاگرد" : "Chat with client"}</button>}
@@ -388,9 +365,10 @@ function ThreadDrawer({ data, id, session, realtimeVersion, initialNotesOpen=fal
   const [message, setMessage] = useState(""); const [file, setFile] = useState<File>(); const [busy, setBusy] = useState(false); const [failed, setFailed] = useState(false);
   const list = useRef<HTMLDivElement>(null); const editor = useRef<HTMLTextAreaElement>(null); const composer = useRef<HTMLFormElement>(null);
   const stableHeight = useRef(0);
+  const followLatest = useRef(true);
   const previewing = useRef(false); const previewScroll = useRef<number | null>(null);
   useEffect(()=>{if(initialNotesOpen)document.querySelector<HTMLDetailsElement>(".chat-notes-dock details")?.setAttribute("open","");},[initialNotesOpen]);
-  const scrollToLatest = useCallback(() => { const node = list.current; if (node && !previewing.current) requestAnimationFrame(() => node.scrollTop = node.scrollHeight); }, []);
+  const scrollToLatest = useCallback(() => { const node = list.current; if (node && !previewing.current && followLatest.current) requestAnimationFrame(() => node.scrollTop = node.scrollHeight); }, []);
   useEffect(scrollToLatest, [data.items.length, scrollToLatest]);
   useLayoutEffect(() => {
     if (previewOpen || !previewing.current || previewScroll.current === null) return;
@@ -443,10 +421,10 @@ function ThreadDrawer({ data, id, session, realtimeVersion, initialNotesOpen=fal
       root.style.removeProperty("--chat-keyboard-inset");
     };
   }, [scrollToLatest]);
-  const send = async (event: FormEvent) => { event.preventDefault(); if ((!message.trim() && !file) || busy) return; setBusy(true); setFailed(false); try { const body = file ? new FormData() : JSON.stringify({ message:message.trim() }); if (body instanceof FormData) { body.append("message",message.trim()); body.append("file",file!); } await action(`/api/threads/${id}/reply`, { method:"POST", body }); setMessage(""); setFile(undefined); } catch { setFailed(true); } finally { setBusy(false); } };
+  const send = async (event: FormEvent) => { event.preventDefault(); if ((!message.trim() && !file) || busy) return; setBusy(true); setFailed(false); try { const body = file ? new FormData() : JSON.stringify({ message:message.trim() }); if (body instanceof FormData) { body.append("message",message.trim()); body.append("file",file!); } followLatest.current=true; await action(`/api/threads/${id}/reply`, { method:"POST", body }); setMessage(current=>current===message?"":current); setFile(current=>current===file?undefined:current); scrollToLatest(); } catch { setFailed(true); } finally { setBusy(false); } };
   const submitOnEnter = (event: KeyboardEvent<HTMLTextAreaElement>) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && matchMedia("(hover: hover) and (pointer: fine)").matches) { event.preventDefault(); event.currentTarget.closest("form")?.requestSubmit(); } };
   const openPreview = (media: PreviewMedia) => { previewScroll.current = list.current?.scrollTop ?? 0; previewing.current = true; onPreview(media); };
-  return <div className="chat-shell"><div className="chat-notes-dock"><CollaborationPanel kind="thread" id={id} session={session} lang={lang} version={realtimeVersion} variant="header"/></div><div ref={list} className="chat-list" aria-live="polite">{data.items.length ? data.items.map((item: MessageItem, index) => <Fragment key={item.id}>{dayKey(item.created_at) !== dayKey(data.items[index - 1]?.created_at) && <div className="chat-day"><span>{conversationDay(item.created_at,lang)}</span></div>}<div className={`bubble ${item.direction}`}><>{item.direction==="sensi"&&<small className="message-author">{item.sender_name??(lang==="fa"?"مربی (پیام قدیمی)":"Coach (legacy)")}</small>}</><MessageContent item={item} lang={lang} onMediaLoad={scrollToLatest} onPreview={openPreview}/><time>{messageTime(item.created_at, lang)}</time></div></Fragment>) : <Empty text={t("empty")}/>}</div><form ref={composer} hidden={!can(session,"chats.reply")} className="chat-composer" onSubmit={send}>{failed && <p className="chat-composer__error" role="alert">{lang === "fa" ? "ارسال انجام نشد؛ فایل باید حداکثر ۱۰ مگابایت و از نوع مجاز باشد." : "Could not send. Use a supported file up to 10 MB."}</p>}{file && message.length > 1024 && <p className="chat-composer__error" role="alert">{lang === "fa" ? "توضیح پیوست باید حداکثر ۱۰۲۴ نویسه باشد؛ متن فعلی حفظ شده است." : "Attachment captions allow 1,024 characters. Your text has been kept."}</p>}{file && <AttachmentDraft key={`${file.name}-${file.lastModified}`} file={file} lang={lang} onRemove={() => setFile(undefined)} onPreview={openPreview}/>}<label className="chat-composer__attachment" aria-label={lang === "fa" ? "افزودن عکس یا فایل" : "Attach photo or file"}><Paperclip/><input type="file" accept=".jpg,.jpeg,.png,.webp,.gif,.mp4,.mp3,.m4a,.ogg,.wav,.pdf,.doc,.docx,.xlsx,.zip,.txt" onChange={(event) => { const next=event.currentTarget.files?.[0]; if (next && next.size <= 10 * 1024 * 1024) { setFile(next); setFailed(false); } else if (next) setFailed(true); event.currentTarget.value=""; }}/></label><textarea ref={editor} id="reply" className="chat-composer__editor" aria-label={t("reply")} rows={1} maxLength={file ? 1024 : 4000} value={message} placeholder={lang === "fa" ? "پیامت را بنویس…" : "Write a message…"} onChange={(event) => { setMessage(event.currentTarget.value); if (failed) setFailed(false); }} onKeyDown={submitOnEnter}/><button className="chat-composer__send" disabled={busy || (!message.trim() && !file) || Boolean(file && message.length > 1024)} aria-label={t("send")}>{busy ? <LoaderCircle className="spin"/> : <Send />}</button></form></div>;
+  return <div className="chat-shell"><div className="chat-notes-dock"><CollaborationPanel kind="thread" id={id} session={session} lang={lang} version={realtimeVersion} variant="header"/></div><div ref={list} onScroll={event=>{const node=event.currentTarget;followLatest.current=node.scrollHeight-node.scrollTop-node.clientHeight<96;}} className="chat-list" aria-live="polite">{data.items.length ? data.items.map((item: MessageItem, index) => <Fragment key={item.id}>{dayKey(item.created_at) !== dayKey(data.items[index - 1]?.created_at) && <div className="chat-day"><span>{conversationDay(item.created_at,lang)}</span></div>}<div className={`bubble ${item.direction}`}><>{item.direction==="sensi"&&<small className="message-author">{item.sender_name??(lang==="fa"?"مربی (پیام قدیمی)":"Coach (legacy)")}</small>}</><MessageContent item={item} lang={lang} onMediaLoad={scrollToLatest} onPreview={openPreview}/><time>{messageTime(item.created_at, lang)}</time></div></Fragment>) : <Empty text={t("empty")}/>}</div><form ref={composer} hidden={!can(session,"chats.reply")} className="chat-composer" onSubmit={send}>{failed && <p className="chat-composer__error" role="alert">{lang === "fa" ? "ارسال انجام نشد؛ فایل باید حداکثر ۱۰ مگابایت و از نوع مجاز باشد." : "Could not send. Use a supported file up to 10 MB."}</p>}{file && message.length > 1024 && <p className="chat-composer__error" role="alert">{lang === "fa" ? "توضیح پیوست باید حداکثر ۱۰۲۴ نویسه باشد؛ متن فعلی حفظ شده است." : "Attachment captions allow 1,024 characters. Your text has been kept."}</p>}{file && <AttachmentDraft key={`${file.name}-${file.lastModified}`} file={file} lang={lang} onRemove={() => setFile(undefined)} onPreview={openPreview}/>}<label className="chat-composer__attachment" aria-label={lang === "fa" ? "افزودن عکس یا فایل" : "Attach photo or file"}><Paperclip/><input type="file" accept=".jpg,.jpeg,.png,.webp,.gif,.mp4,.mp3,.m4a,.ogg,.wav,.pdf,.doc,.docx,.xlsx,.zip,.txt" onChange={(event) => { const next=event.currentTarget.files?.[0]; if (next && next.size <= 10 * 1024 * 1024) { setFile(next); setFailed(false); } else if (next) setFailed(true); event.currentTarget.value=""; }}/></label><textarea ref={editor} id="reply" className="chat-composer__editor" aria-label={t("reply")} rows={1} maxLength={file ? 1024 : 4000} value={message} placeholder={lang === "fa" ? "پیامت را بنویس…" : "Write a message…"} onChange={(event) => { setMessage(event.currentTarget.value); if (failed) setFailed(false); }} onKeyDown={submitOnEnter}/><button className="chat-composer__send" disabled={busy || (!message.trim() && !file) || Boolean(file && message.length > 1024)} aria-label={t("send")}>{busy ? <LoaderCircle className="spin"/> : <Send />}</button></form></div>;
 }
 
 function previewKind(name: string, mime?: string | null): PreviewMedia["kind"] {
@@ -490,7 +468,7 @@ function ProfileFact({ icon, label, value, wide = false }: { icon: ReactNode; la
 }
 
 function PhotoGallery({ count = 0, source, lang, onPreview }: { count?: number; source: (index: number) => string; lang: Lang; onPreview: (media: PreviewMedia) => void }) {
-  if (!count) return <Empty text={lang === "fa" ? "عکسی برای این دوره ثبت نشده است" : "No photos saved for this course"}/>;
+  if (!count) return <Empty text={lang === "fa" ? "عکسی ثبت نشده است" : "No photos saved"}/>;
   return <div className="profile-gallery">{Array.from({ length:count }, (_, index) => <button key={index} onClick={() => onPreview({ source:source(index), kind:"image", name:`${lang === "fa" ? "عکس" : "Photo"} ${index + 1}` })} aria-label={`${lang === "fa" ? "نمایش عکس" : "Open photo"} ${index + 1}`}><img src={source(index)} alt={`${lang === "fa" ? "عکس ثبت‌شده" : "Saved photo"} ${index + 1}`} loading="lazy" decoding="async"/><span>{index + 1}</span></button>)}</div>;
 }
 
@@ -499,13 +477,13 @@ function CustomerDrawer({ data, session, realtimeVersion, initialNotesOpen=false
   const [openedAt] = useState(Date.now);
   const u = data.user;
   const name = displayName(u, lang);
-  const activeCourses = data.orders.filter((order) => ["paid", "needs_info", "in_progress", "ready"].includes(order.status) || (order.status === "delivered" && Boolean(order.delivered_at) && (order.subscription_expires_at?Date.parse(order.subscription_expires_at):Date.parse(order.delivered_at!) + (order.duration_days??30) * 86400000) > openedAt));
+  const activeCourses = data.orders.filter((order) => ["paid", "needs_info", "in_progress", "ready"].includes(order.status) || (order.status === "delivered" && Boolean(order.delivered_at) && order.duration_days !== -1 && (order.duration_days === 0 || (order.subscription_expires_at ? Date.parse(order.subscription_expires_at) : Date.parse(order.delivered_at!) + (order.duration_days ?? 30) * 86400000) > openedAt)));
   const paidOrders = data.orders.filter((order) => Boolean(order.paid_at));
   const totalPaid = paidOrders.reduce((total, order) => total + Number(order.amount || 0), 0);
   const copy = lang === "fa" ? {
-    customerCode:"کد مشتری", registered:"عضویت", profile:"مشخصات فردی", body:"اندازه‌ها و وضعیت بدنی", photos:"عکس‌های ثبت‌شده", plan:"برنامه و سبک تمرین", nutrition:"تغذیه و سلامت", orders:"تاریخچه سفارش‌ها", activeCourses:"دوره‌های فعال", revisions:"تغییرات ثبت‌شده", messages:"پیام‌های اخیر", active:"دوره فعال", paid:"پرداخت موفق", profileRecords:"نسخه اطلاعات", current:"اطلاعات فعلی", foodAllergy:"حساسیت غذایی", restriction:"محدودیت غذایی", supplements:"مکمل‌ها", trainingDays:"روزهای تمرین", workoutDays:"تمرین در هفته", nutritionDays:"روزهای برنامه تغذیه", noRecords:"تغییری ثبت نشده است",
+    customerCode:"کد کاربر", registered:"عضویت", profile:"مشخصات فردی", body:"اندازه‌ها و وضعیت بدنی", photos:"عکس‌های ثبت‌شده", plan:"برنامه و سبک تمرین", nutrition:"تغذیه و سلامت", orders:"تاریخچه سفارش‌ها", activeCourses:"دوره‌های فعال", revisions:"تغییرات ثبت‌شده", messages:"پیام‌های اخیر", active:"دوره فعال", paid:"پرداخت موفق", profileRecords:"نسخه اطلاعات", current:"اطلاعات فعلی", foodAllergy:"حساسیت غذایی", restriction:"محدودیت غذایی", supplements:"مکمل‌ها", trainingDays:"روزهای تمرین", workoutDays:"تمرین در هفته", nutritionDays:"روزهای برنامه تغذیه", noRecords:"تغییری ثبت نشده است",
   } : {
-    customerCode:"Customer code", registered:"Joined", profile:"Personal details", body:"Body metrics", photos:"Saved photos", plan:"Training profile", nutrition:"Nutrition & health", orders:"Order history", activeCourses:"Active courses", revisions:"Profile revisions", messages:"Recent messages", active:"Active courses", paid:"Paid total", profileRecords:"Profile record", current:"Current profile", foodAllergy:"Food allergy", restriction:"Food restriction", supplements:"Supplements", trainingDays:"Training days", workoutDays:"Workouts / week", nutritionDays:"Nutrition plan days", noRecords:"No profile changes yet",
+    customerCode:"User code", registered:"Joined", profile:"Personal details", body:"Body metrics", photos:"Saved photos", plan:"Training profile", nutrition:"Nutrition & health", orders:"Order history", activeCourses:"Active courses", revisions:"Profile revisions", messages:"Recent messages", active:"Active courses", paid:"Paid total", profileRecords:"Profile record", current:"Current profile", foodAllergy:"Food allergy", restriction:"Food restriction", supplements:"Supplements", trainingDays:"Training days", workoutDays:"Workouts / week", nutritionDays:"Nutrition plan days", noRecords:"No profile changes yet",
   };
   const fact = (value: string | number | undefined) => value === undefined || value === null || value === "" ? "—" : value;
   const revisions = data.history.slice(0, 4).map((record, index) => {
@@ -549,8 +527,8 @@ export default function ConsoleApp({ initialView = "dashboard" }: { initialView?
   const [data, setData] = useState<PageData>(); const [loading, setLoading] = useState(true); const [failed, setFailed] = useState(false);
   const [unread, setUnread] = useState(0);
   const [assigned, setAssigned] = useState(0);
-  const [pages, setPages] = useState<Record<View, number>>({ dashboard:1, followups:1, orders:1, messages:1, customers:1, sales:1, catalog:1, analytics:1 });
-  const [filters, setFilters] = useState({ q:"", activity:"all", product:"", sort:"recent" });
+  const [pages, setPages] = useState<Record<View, number>>({ dashboard:1, followups:1, orders:1, messages:1, customers:1, sales:1, catalog:1, analytics:1, broadcasts:1 });
+  const [filters, setFilters] = useState({ q:"", activity:"all", product:"", sort:"joined_desc" });
   const [orderStatus, setOrderStatus] = useState("all");
   const [orderSearch, setOrderSearch] = useState("");
   const [orderSearchDraft, setOrderSearchDraft] = useState("");
@@ -562,6 +540,9 @@ export default function ConsoleApp({ initialView = "dashboard" }: { initialView?
   const [followupState,setFollowupState]=useState<FollowupState>("all");
   const [followupSort,setFollowupSort]=useState<FollowupSort>("newest");
   const [searchDraft, setSearchDraft] = useState(""); const [drawer, setDrawer] = useState<DrawerState>(null); const [refresh, setRefresh] = useState(0);
+  const [detailRefresh, setDetailRefresh] = useState(0);
+  const drawerRef = useRef<DrawerState>(null);
+  const mobileMenu = useRef<HTMLDialogElement>(null);
   const [mobileCustomerToolsHidden, setMobileCustomerToolsHidden] = useState(false);
   const cache = useRef<Record<string, PageData>>({});
   const pathRef = useRef("");
@@ -571,18 +552,32 @@ export default function ConsoleApp({ initialView = "dashboard" }: { initialView?
   const t = useMemo(() => translator(lang), [lang]);
 
   useEffect(() => { viewRef.current = view; }, [view]);
+  useEffect(() => { drawerRef.current = drawer; }, [drawer]);
   useEffect(() => {
     if (!session) return;
     let nextReport = 0;
-    const report = (event: ErrorEvent | PromiseRejectionEvent) => {
-      if ("reason" in event && event.reason?.name === "AbortError") return;
+    let pending: {view:View;kind:string;frames:string[];request_id:string}|null=null;
+    let sending=false;
+    const flush=()=>{
+      if(!pending||sending||!navigator.onLine)return;
+      const payload=pending;sending=true;
+      void api("/api/analytics/client-error",session.csrf,{method:"POST",body:JSON.stringify(payload)})
+        .then(()=>{if(pending===payload)pending=null;}).catch(()=>{}).finally(()=>{sending=false;});
+    };
+    const report = (event: Event) => {
+      if (event instanceof PromiseRejectionEvent && event.reason?.name === "AbortError") return;
       if (Date.now() < nextReport) return;
       nextReport = Date.now() + 60_000;
-      // Bounded page name only: never send error text, URLs, credentials or user content.
-      void api("/api/analytics/client-error", session.csrf, {method:"POST",body:JSON.stringify({view:viewRef.current})}).catch(()=>{});
+      // Only bundle basename/line/column, never error messages, URLs, inputs or tokens.
+      const error=event instanceof PromiseRejectionEvent?event.reason:event instanceof ErrorEvent?event.error:null;
+      const frames=typeof error?.stack==="string"?Array.from(String(error.stack).matchAll(/([a-zA-Z0-9_.-]{1,100}\.js:\d{1,8}:\d{1,8})/g),m=>m[1]).slice(0,10):[];
+      const detail=event instanceof CustomEvent?event.detail:null;
+      const kind=["NetworkError","TimeoutError","HttpError","SlowRequest","MediaError"].includes(detail?.kind)?detail.kind:["TypeError","RangeError","ReferenceError","SyntaxError","URIError","AggregateError"].includes(error?.name)?error.name:"Error";
+      pending={view:viewRef.current,kind,frames,request_id:typeof detail?.requestId==="string"&&/^[a-f0-9]{16}$/.test(detail.requestId)?detail.requestId:""};
+      flush();
     };
-    addEventListener("error", report); addEventListener("unhandledrejection", report);
-    return () => { removeEventListener("error", report); removeEventListener("unhandledrejection", report); };
+    addEventListener("error", report); addEventListener("unhandledrejection", report);addEventListener("sensi:diagnostic",report);addEventListener("online",flush);
+    return () => { removeEventListener("error", report); removeEventListener("unhandledrejection", report);removeEventListener("sensi:diagnostic",report);removeEventListener("online",flush); };
   }, [session]);
   useEffect(() => { document.documentElement.lang = lang; document.documentElement.dir = lang === "fa" ? "rtl" : "ltr"; document.documentElement.dataset.theme = theme; }, [lang, theme]);
   useEffect(() => { api<Session>("/api/session").then(setSession).catch((error) => setSession(error instanceof ApiError && error.status === 401 ? null : null)); }, []);
@@ -608,7 +603,7 @@ export default function ConsoleApp({ initialView = "dashboard" }: { initialView?
 
   useEffect(() => {
     if (!session) return;
-    if (view === "analytics") return;
+    if (view === "analytics" || view === "broadcasts") return;
     let path = `/api/dashboard?period=${period}`;
     if (view === "catalog") path = `/api/catalog?page=${pages.catalog}`;
     if (view === "orders") { const params = new URLSearchParams({ page:String(pages.orders) }); if (orderStatus !== "all") params.set("status",orderStatus); if (orderSearch) params.set("q",orderSearch); path = `/api/orders?${params}`; }
@@ -645,38 +640,57 @@ export default function ConsoleApp({ initialView = "dashboard" }: { initialView?
   }, [filters, followupSearch, followupSort, followupState, messageFilter, messageSearch, orderSearch, orderStatus, pages, period, session, view, refresh]);
   useEffect(() => {
     if (!session) return;
-    let opened = false;
-    const source = new EventSource("/api/events"); source.onopen = () => { setConnection("online"); if (opened) { delete cache.current[pathRef.current]; setRefresh((value) => value + 1); } opened = true; }; source.onerror = () => setConnection(navigator.onLine ? "connecting" : "offline");
+    let opened = false, listDirty = false, detailDirty = false, badgeDirty = false, badgeBusy = false;
+    const controller = new AbortController();
+    const schedule = () => {
+      if (refreshTimer.current !== null) return;
+      refreshTimer.current = window.setTimeout(() => {
+        refreshTimer.current = null;
+        if (listDirty) { listDirty = false; delete cache.current[pathRef.current]; if (viewRef.current === "customers") setPages(old=>({...old,customers:1})); setRefresh(value=>value+1); }
+        if (detailDirty) { detailDirty = false; setDetailRefresh(value=>value+1); }
+        if (badgeDirty && !badgeBusy) {
+          badgeDirty = false; badgeBusy = true;
+          void api<FollowUpPage>("/api/followups?page=1",session.csrf,{signal:controller.signal}).then(result=>{if(!controller.signal.aborted){setAssigned(result.followupCounts.unseen);if(can(session,"chats.read"))setUnread(result.counts.unread_messages);}}).catch(()=>undefined).finally(()=>{badgeBusy=false;if(badgeDirty&&!controller.signal.aborted)schedule();});
+        }
+      // At most four reads per batch: stay below the API's 180/min account limit.
+      }, 2_000);
+    };
+    const source = new EventSource("/api/events"); source.onopen = () => { setConnection("online"); if (opened) { listDirty = true; detailDirty = Boolean(drawerRef.current); schedule(); } opened = true; }; source.onerror = () => setConnection(navigator.onLine ? "connecting" : "offline");
     source.addEventListener("session-expired",()=>{source.close();cache.current={};setDrawer(null);setSession(null);});
     source.addEventListener("update", (event) => { try {
       const update = JSON.parse((event as MessageEvent).data) as RealtimeUpdate;
       if (update.table === "support_messages" && update.action === "insert" && update.direction === "customer") setUnread((value) => value + 1);
-      if (update.table === "staff_assignments") void api<FollowUpPage>("/api/followups?page=1",session.csrf).then(result=>setAssigned(result.followupCounts.unseen)).catch(()=>undefined);
-      if (update.table && !realtimeTables[viewRef.current].includes(update.table)) return;
-      delete cache.current[pathRef.current];
-      if (refreshTimer.current === null) refreshTimer.current = window.setTimeout(() => { refreshTimer.current = null; if (viewRef.current === "customers") setPages((old) => ({ ...old, customers:1 })); setRefresh((value) => value + 1); }, 1_000);
+      if (update.table === "staff_assignments" || update.resync) badgeDirty = ["customers.read","chats.read","orders.read"].some(permission=>can(session,permission));
+      listDirty ||= !update.table || realtimeTables[viewRef.current].includes(update.table);
+      // A chat opened from Clients/Tasks must not depend on that page's event filter.
+      const detail = drawerRef.current;
+      const matchingUser = !update.userId || Number(update.userId) === detail?.id;
+      detailDirty ||= Boolean(detail && (!update.table || ["staff_notes","staff_assignments"].includes(update.table) || (update.table==="users" && (detail.type==="order" || matchingUser)) || (update.table==="support_messages" && detail.type==="thread" && matchingUser) || (update.table==="orders" && (detail.type==="order" ? !update.id || Number(update.id)===detail.id : detail.type==="customer" && matchingUser))));
+      if (listDirty || detailDirty || badgeDirty) schedule();
     } catch { /* ignored */ } });
     const online = () => setConnection("connecting"), offline = () => setConnection("offline"); window.addEventListener("online", online); window.addEventListener("offline", offline);
-    return () => { source.close(); if (refreshTimer.current !== null) window.clearTimeout(refreshTimer.current); refreshTimer.current = null; window.removeEventListener("online", online); window.removeEventListener("offline", offline); };
+    return () => { source.close(); controller.abort(); if (refreshTimer.current !== null) window.clearTimeout(refreshTimer.current); refreshTimer.current = null; window.removeEventListener("online", online); window.removeEventListener("offline", offline); };
   }, [session]);
   useEffect(() => { if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js", { updateViaCache:"none" }).then((worker) => worker.update()).catch(() => undefined); }, []);
 
   const showView = useCallback((next: View, push: boolean) => {
     if (next === "customers") setPages((old) => old.customers === 1 ? old : { ...old, customers:1 });
-    setView(next); setDrawer(null); setFailed(false); setLoading(true);
+    setView(next); setDrawer(null); setFailed(false); setLoading(next !== "analytics" && next !== "broadcasts");
     if (push) history.pushState(null, "", next === "dashboard" ? "/" : `/${next}`);
     window.scrollTo({ top:0, behavior:"auto" });
   }, []);
   const navigate = (next: View) => { if (next !== view) showView(next, true); };
-  useEffect(() => { const pop = () => { const next = location.pathname.split("/")[1] as View; showView(["followups","orders","messages","customers","sales","catalog","analytics"].includes(next) ? next : "dashboard", false); }; addEventListener("popstate", pop); return () => removeEventListener("popstate", pop); }, [showView]);
+  useEffect(() => { const pop = () => { const next = location.pathname.split("/")[1] as View; showView(["followups","orders","messages","customers","sales","catalog","analytics","broadcasts"].includes(next) ? next : "dashboard", false); }; addEventListener("popstate", pop); return () => removeEventListener("popstate", pop); }, [showView]);
   const setPage = (page: number) => setPages((old) => ({ ...old, [view]:page }));
   const mutate = async (path: string, body: unknown) => { if (!session) return; await api(path, session.csrf, { method:"POST", body:JSON.stringify(body) }); setRefresh((value) => value + 1); };
 
   if (session === undefined) return <main className="boot"><div className="brand-mark"><span>S</span></div><LoaderCircle className="spin"/></main>;
   if (!session) return <Login lang={lang}/>;
-  const allNav: Array<[View, CopyKey, typeof LayoutDashboard]> = [["dashboard","dashboard",LayoutDashboard],["followups","followups",BellRing],["orders","orders",ClipboardList],["messages","messages",MessageCircle],["customers","customers",UsersRound],["sales","sales",BarChart3],["catalog","catalog",Dumbbell],["analytics","analytics",Activity]];
-  const nav = allNav.filter(([key])=>key==="catalog"?session.role!=="staff":key==="dashboard"||(key==="followups"?["chats.read","customers.read","orders.read"].some(permission=>can(session,permission)):can(session,({orders:"orders.read",messages:"chats.read",customers:"customers.read",sales:"sales.read",analytics:"analytics.self"} as Record<string,string>)[key])));
+  const allNav: Array<[View, CopyKey, typeof LayoutDashboard]> = [["dashboard","dashboard",LayoutDashboard],["followups","followups",BellRing],["orders","orders",ClipboardList],["messages","messages",MessageCircle],["customers","customers",UsersRound],["sales","sales",BarChart3],["catalog","catalog",Dumbbell],["broadcasts","broadcasts",Send],["analytics","analytics",Activity]];
+  const nav = allNav.filter(([key])=>key==="catalog"||key==="broadcasts"?session.role!=="staff":key==="dashboard"||(key==="followups"?["chats.read","customers.read","orders.read"].some(permission=>can(session,permission)):can(session,({orders:"orders.read",messages:"chats.read",customers:"customers.read",sales:"sales.read",analytics:"analytics.self"} as Record<string,string>)[key])));
   const customerData = renderedView === "customers" && data && "products" in data ? data as CustomerPage : undefined;
+  const primaryNav = nav.length <= 5 ? nav : nav.filter(([key])=>["dashboard","orders","messages","customers"].includes(key));
+  const extraNav = nav.filter(item=>!primaryNav.includes(item));
   const headerControls = <><div className={`sync-status glass ${connection} ${lang}`} role="status" aria-live="polite"><span>{connection === "online" ? t("connected") : t(connection)}</span>{connection !== "online" && <LoaderCircle className="spin"/>}<i/></div><header className="topbar glass"><button className="top-button" onClick={()=>setStaffOpen(true)} aria-label={lang==="fa"?"پروفایل و مدیریت تیم":"Profile and team"}><UserRound/></button><button className="top-button" onClick={() => setLang(lang === "fa" ? "en" : "fa")} aria-label="Language">{lang === "fa" ? "EN" : "فا"}</button><button className="top-button" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} aria-label="Theme">{theme === "dark" ? <Sun/> : <Moon/>}</button></header></>;
   return <div className={`app-shell ${collapsed === "1" ? "nav-collapsed" : ""}${view === "customers" ? " customers-view" : ""}`}>
     <a className="skip-link" href="#main-content">Skip to content</a>
@@ -685,13 +699,14 @@ export default function ConsoleApp({ initialView = "dashboard" }: { initialView?
     <aside className="sidebar glass"><div className="sidebar-brand"><div className="brand-mark small"><span>S</span></div><strong>Sensi</strong><button className="collapse-button" onClick={() => setCollapsed(collapsed === "1" ? "0" : "1")} aria-expanded={collapsed !== "1"} aria-label={t(collapsed === "1" ? "expandNav" : "collapseNav")}><Menu /></button></div><nav>{nav.map(([key,label,Icon]) => <button key={key} className={view === key ? "active" : ""} onClick={() => navigate(key)} aria-label={t(label)} title={t(label)}><Icon/><span>{t(label)}</span>{key === "messages" && unread > 0 && <b>{unread}</b>}{key === "followups" && assigned > 0 && <b>{assigned}</b>}</button>)}</nav><div className="sidebar-foot"><span className={`connection ${connection}`}><i/>{connection === "online" ? t("connected") : t(connection)}</span></div></aside>
     {view === "customers" ? <section className={`customer-mobile-bar glass${mobileCustomerToolsHidden ? " is-hidden" : ""}`}>{headerControls}{customerData && <CustomerTools data={customerData} lang={lang} t={t} setPage={setPage} filters={filters} setFilters={setFilters} searchDraft={searchDraft} setSearchDraft={setSearchDraft} className="mobile-customer-tools"/>}</section> : headerControls}
     <main id="main-content" className="content" tabIndex={-1}>
-      {loading && view !== "analytics" && <div className="page-progress" role="progressbar" aria-label="Loading"/>}
-      <div className="content-pane" aria-busy={view !== "analytics" && loading}>
-        {view === "analytics" ? <Analytics session={session} lang={lang} navigate={navigate}/> : !data ? (failed ? <Glass><Empty text={t("error")}/><button className="button secondary center" onClick={() => setRefresh((value) => value + 1)}>{t("retry")}</button></Glass> : <Skeleton/>) : <ViewContent view={renderedView} data={data} loading={loading} session={session} lang={lang} t={t} period={period} setPeriod={setPeriod} pages={pages} setPage={setPage} filters={filters} setFilters={setFilters} searchDraft={searchDraft} setSearchDraft={setSearchDraft} orderStatus={orderStatus} setOrderStatus={setOrderStatus} orderSearch={orderSearch} setOrderSearch={setOrderSearch} orderSearchDraft={orderSearchDraft} setOrderSearchDraft={setOrderSearchDraft} messageFilter={messageFilter} setMessageFilter={setMessageFilter} messageSearch={messageSearch} setMessageSearch={setMessageSearch} messageSearchDraft={messageSearchDraft} setMessageSearchDraft={setMessageSearchDraft} followupSearch={followupSearch} setFollowupSearch={setFollowupSearch} followupSearchDraft={followupSearchDraft} setFollowupSearchDraft={setFollowupSearchDraft} followupState={followupState} setFollowupState={setFollowupState} followupSort={followupSort} setFollowupSort={setFollowupSort} navigate={navigate} openDrawer={setDrawer} mutate={mutate} refresh={() => setRefresh((value) => value + 1)}/>}
+      {loading && view !== "analytics" && view !== "broadcasts" && <div className="page-progress" role="progressbar" aria-label="Loading"/>}
+      <div className="content-pane" aria-busy={view !== "analytics" && view !== "broadcasts" && loading}>
+        {view === "analytics" ? <Analytics session={session} lang={lang} navigate={navigate}/> : view === "broadcasts" ? <Broadcasts session={session} lang={lang}/> : !data ? (failed ? <Glass><Empty text={t("error")}/><button className="button secondary center" onClick={() => setRefresh((value) => value + 1)}>{t("retry")}</button></Glass> : <Skeleton/>) : <ViewContent view={renderedView} data={data} loading={loading} session={session} lang={lang} t={t} period={period} setPeriod={setPeriod} pages={pages} setPage={setPage} filters={filters} setFilters={setFilters} searchDraft={searchDraft} setSearchDraft={setSearchDraft} orderStatus={orderStatus} setOrderStatus={setOrderStatus} orderSearch={orderSearch} setOrderSearch={setOrderSearch} orderSearchDraft={orderSearchDraft} setOrderSearchDraft={setOrderSearchDraft} messageFilter={messageFilter} setMessageFilter={setMessageFilter} messageSearch={messageSearch} setMessageSearch={setMessageSearch} messageSearchDraft={messageSearchDraft} setMessageSearchDraft={setMessageSearchDraft} followupSearch={followupSearch} setFollowupSearch={setFollowupSearch} followupSearchDraft={followupSearchDraft} setFollowupSearchDraft={setFollowupSearchDraft} followupState={followupState} setFollowupState={setFollowupState} followupSort={followupSort} setFollowupSort={setFollowupSort} navigate={navigate} openDrawer={setDrawer} mutate={mutate} refresh={() => setRefresh((value) => value + 1)}/>}
       </div>
     </main>
-    <nav className="mobile-nav glass">{nav.map(([key,label,Icon]) => <button key={key} className={view === key ? "active" : ""} onClick={() => navigate(key)} aria-label={t(label)}><Icon/>{key === "messages" && unread > 0 && <b>{unread}</b>}{key === "followups" && assigned > 0 && <b>{assigned}</b>}</button>)}</nav>
-    {drawer && <Drawer key={`${drawer.type}:${drawer.id}`} state={drawer} session={session} lang={lang} t={t} realtimeVersion={refresh} onClose={() => setDrawer(null)} onNavigate={setDrawer} onChanged={() => setRefresh((value) => value + 1)}/>}<div className="sr-only" aria-live="polite">{connection === "online" ? t("connected") : t(connection)}</div>
+    <nav className="mobile-nav glass">{primaryNav.map(([key,label,Icon]) => <button key={key} className={view === key ? "active" : ""} onClick={() => navigate(key)} aria-label={t(label)} aria-current={view===key?"page":undefined}><Icon/>{key === "messages" && unread > 0 && <b>{unread}</b>}{key === "followups" && assigned > 0 && <b>{assigned}</b>}</button>)}{extraNav.length>0&&<button className={extraNav.some(([key])=>key===view)?"active":""} aria-label={lang==="fa"?"بیشتر":"More"} aria-haspopup="dialog" onClick={()=>mobileMenu.current?.showModal()}><Menu/>{assigned>0&&<b>{assigned}</b>}</button>}</nav>
+    <dialog ref={mobileMenu} className="workspace-menu" aria-labelledby="workspace-menu-title" onClick={event=>{if(event.target===mobileMenu.current)mobileMenu.current.close();}}><header><h2 id="workspace-menu-title">{lang==="fa"?"بخش‌های بیشتر":"More workspaces"}</h2><button className="icon-button" aria-label={t("close")} onClick={()=>mobileMenu.current?.close()}><X/></button></header><nav>{extraNav.map(([key,label,Icon])=><button key={key} aria-current={view===key?"page":undefined} onClick={()=>{mobileMenu.current?.close();navigate(key);}}><Icon/><span>{t(label)}</span>{key==="followups"&&assigned>0&&<b>{assigned}</b>}</button>)}</nav></dialog>
+    {drawer && <Drawer key={`${drawer.type}:${drawer.id}`} state={drawer} session={session} lang={lang} t={t} realtimeVersion={detailRefresh} onClose={() => setDrawer(null)} onNavigate={setDrawer} onChanged={() => setRefresh((value) => value + 1)}/>}<div className="sr-only" aria-live="polite">{connection === "online" ? t("connected") : t(connection)}</div>
   </div>;
 }
 
@@ -734,9 +749,9 @@ function CustomerTools({ data, lang, t, setPage, filters, setFilters, searchDraf
   const searchInput = useRef<HTMLInputElement>(null);
   const products: Array<[string,string]> = [["",t("allCourses")], ...(data.products ?? []).map((p:ProductOption) => [String(p.id),p.title] as [string,string])];
   const change = (key:"activity"|"product"|"sort", value:string) => { setPage(1); setFilters((old) => ({ ...old, [key]:value })); };
-  const hasFilters = Boolean(searchDraft || filters.activity !== "all" || filters.product || filters.sort !== "recent");
-  const compact = lang === "fa" ? ["وضعیت", "دوره", "تازه‌ترین"] : ["Status", "Course", "Newest"];
-  return <Glass className={`customer-tools ${className}`}><label className="search-field"><Search/><span className="sr-only">{t("searchCustomer")}</span><input ref={searchInput} value={searchDraft} onChange={(event) => setSearchDraft(event.target.value)} placeholder={t("searchCustomer")} autoComplete="off" spellCheck={false} enterKeyHint="search"/></label><div className="filter-row" aria-label={t("sortBy")}><SelectMenu compact compactDefault={compact[0]} label={t("activityFilter")} value={filters.activity} options={[["all",t("allStudents")],["active",t("activeOnly")],["inactive",t("inactiveOnly")]]} onChange={(value) => change("activity",value)}/><SelectMenu compact compactDefault={compact[1]} label={t("courseFilter")} value={filters.product} options={products} onChange={(value) => change("product",value)}/><SelectMenu compact compactDefault={compact[2]} label={t("sortBy")} value={filters.sort} options={[["recent",t("sortRecent")],["name_asc",t("sortNameAsc")],["name_desc",t("sortNameDesc")],["spend_desc",t("sortSpendDesc")],["spend_asc",t("sortSpendAsc")],["orders_desc",t("sortOrdersDesc")],["orders_asc",t("sortOrdersAsc")]]} onChange={(value) => change("sort",value)}/><button className={`filter-clear${hasFilters ? " active" : ""}`} aria-label={t("clearFilters")} title={t("clearFilters")} disabled={!hasFilters} onClick={() => { setPage(1); setSearchDraft(""); setFilters({q:"",activity:"all",product:"",sort:"recent"}); }}><X/><span className="filter-clear-label">{t("clearFilters")}</span></button></div></Glass>;
+  const hasFilters = Boolean(searchDraft || filters.activity !== "all" || filters.product || filters.sort !== "joined_desc");
+  const compact = lang === "fa" ? ["همه", "دوره", "جدیدترین"] : ["All", "Course", "Newest"];
+  return <Glass className={`customer-tools ${className}`}><label className="search-field"><Search/><span className="sr-only">{t("searchCustomer")}</span><input ref={searchInput} value={searchDraft} onChange={(event) => setSearchDraft(event.target.value)} placeholder={t("searchCustomer")} autoComplete="off" spellCheck={false} enterKeyHint="search"/></label><div className="filter-row" aria-label={t("sortBy")}><SelectMenu compact compactDefault={compact[0]} label={t("activityFilter")} value={filters.activity} options={[["all",t("allStudents")],["users",t("usersOnly")],["students",t("studentsOnly")],["active",t("activeOnly")],["inactive",t("inactiveOnly")]]} onChange={(value) => change("activity",value)}/><SelectMenu compact compactDefault={compact[1]} label={t("courseFilter")} value={filters.product} options={products} onChange={(value) => change("product",value)}/><SelectMenu compact compactDefault={compact[2]} label={t("sortBy")} value={filters.sort} options={[["joined_desc",t("sortJoinedDesc")],["joined_asc",t("sortJoinedAsc")],["recent",t("sortRecent")],["name_asc",t("sortNameAsc")],["name_desc",t("sortNameDesc")],["spend_desc",t("sortSpendDesc")],["spend_asc",t("sortSpendAsc")],["orders_desc",t("sortOrdersDesc")],["orders_asc",t("sortOrdersAsc")]]} onChange={(value) => change("sort",value)}/><button className={`filter-clear${hasFilters ? " active" : ""}`} aria-label={t("clearFilters")} title={t("clearFilters")} disabled={!hasFilters} onClick={() => { setPage(1); setSearchDraft(""); setFilters({q:"",activity:"all",product:"",sort:"joined_desc"}); }}><X/><span className="filter-clear-label">{t("clearFilters")}</span></button></div></Glass>;
 }
 
 function Customers({ data, loading, lang, t, setPage, filters, setFilters, searchDraft, setSearchDraft, openDrawer }: { data:CustomerPage; loading:boolean; lang:Lang; t:(key:CopyKey)=>string; setPage:(page:number)=>void; filters:{q:string;activity:string;product:string;sort:string}; setFilters:React.Dispatch<React.SetStateAction<{q:string;activity:string;product:string;sort:string}>>; searchDraft:string; setSearchDraft:(value:string)=>void; openDrawer:(state:DrawerState)=>void }) {
@@ -747,7 +762,18 @@ function Customers({ data, loading, lang, t, setPage, filters, setFilters, searc
     observer.observe(sentinel.current);
     return () => observer.disconnect();
   }, [data.items.length, data.page, data.total, loading, setPage]);
-  return <div className="customers-layout"><CustomerTools data={data} lang={lang} t={t} setPage={setPage} filters={filters} setFilters={setFilters} searchDraft={searchDraft} setSearchDraft={setSearchDraft} className="desktop-customer-tools"/><div className="customer-results">{data.items.length ? <div className="customer-grid">{data.items.map((customer) => { const name=displayName(customer,lang); const identifier=customer.username ? `@${customer.username}` : `U${String(customer.user_id).padStart(6,"0")}`; return <article className="customer-card glass" key={customer.user_id}><button className="customer-profile-action" onClick={() => openDrawer({type:"customer",id:customer.user_id})}><CustomerPhoto userId={customer.user_id} name={name}/><div className="customer-info"><div className="customer-name"><h2>{name}</h2><p dir="ltr">{identifier}</p></div></div></button><footer className="customer-footer"><dl><div><dt>{t("ordersCount")}</dt><dd>{customer.orders_count}</dd></div><div><dt>{lang === "en" ? "Active" : t("activeCourses")}</dt><dd>{customer.active_courses}</dd></div></dl><button className="customer-message" aria-label={t("openMessages")} onClick={() => openDrawer({type:"thread",id:customer.user_id})}><i><MessageCircle/></i></button></footer></article>; })}</div> : <Glass><Empty text={t("noCustomerResults")}/></Glass>}<div ref={sentinel} className={`load-more-sentinel${loading ? " loading" : ""}`} aria-hidden="true">{loading && <LoaderCircle className="spin"/>}</div></div></div>;
+  return <div className="customers-layout"><CustomerTools data={data} lang={lang} t={t} setPage={setPage} filters={filters} setFilters={setFilters} searchDraft={searchDraft} setSearchDraft={setSearchDraft} className="desktop-customer-tools"/><div className="customer-results">{data.items.length ? <div className="customer-grid">{data.items.map((customer) => {
+    const name = displayName(customer, lang);
+    const identifier = customer.username ? `@${customer.username}` : `U${String(customer.user_id).padStart(6,"0")}`;
+    return <article className="customer-card glass" key={customer.user_id}>
+      <button className="customer-profile-action" aria-label={`${lang === "fa" ? "مشاهده پرونده" : "View profile"}: ${name}`} onClick={() => openDrawer({type:"customer",id:customer.user_id})}>
+        <span className="customer-photo-wrap"><CustomerPhoto userId={customer.user_id} name={name}/><small className="customer-code" dir="ltr">U{String(customer.user_id).padStart(6,"0")}</small><small className="customer-kind">{customer.orders_count>0?(lang==="fa"?"شاگرد":"Student"):(lang==="fa"?"کاربر":"User")}</small></span>
+        <span className="customer-identity"><strong>{name}</strong><small dir="ltr">{identifier}</small></span>
+        <span className="customer-card-stats"><span><small>{t("activeCourses")}</small><strong>{customer.active_courses}</strong></span><span><small>{t("ordersCount")}</small><strong>{customer.orders_count}</strong></span></span>
+      </button>
+      <div className="customer-card-actions"><button className="customer-open-profile" onClick={() => openDrawer({type:"customer",id:customer.user_id})}>{lang === "fa" ? "مشاهده پرونده" : "View profile"}{lang === "fa" ? <ChevronLeft aria-hidden="true"/> : <ChevronRight aria-hidden="true"/>}</button><button className="customer-message" aria-label={`${t("openMessages")}: ${name}`} onClick={() => openDrawer({type:"thread",id:customer.user_id})}><MessageCircle aria-hidden="true"/></button></div>
+    </article>;
+  })}</div> : <Glass><Empty text={t("noCustomerResults")}/></Glass>}<div ref={sentinel} className={`load-more-sentinel${loading ? " loading" : ""}`} aria-hidden="true">{loading && <LoaderCircle className="spin"/>}</div></div></div>;
 }
 
 function Orders({ data, lang, t, pages, setPage, openDrawer, orderStatus, setOrderStatus, orderSearch, setOrderSearch, orderSearchDraft, setOrderSearchDraft }: { data:OrderPage; lang:Lang; t:(key:CopyKey)=>string; pages:Record<View,number>; setPage:(page:number)=>void; openDrawer:(state:DrawerState)=>void; orderStatus:string; setOrderStatus:(value:string)=>void; orderSearch:string; setOrderSearch:(value:string)=>void; orderSearchDraft:string; setOrderSearchDraft:(value:string)=>void }) {
@@ -757,18 +783,18 @@ function Orders({ data, lang, t, pages, setPage, openDrawer, orderStatus, setOrd
     ["in_progress",copy.design,data.counts.designing,Activity],
     ["needs_info",copy.waiting,data.counts.needs_info,MessageCircle],
   ] as const;
-  const task = (status:string) => status === "awaiting_receipt" ? copy.receipt : status === "paid" ? copy.review : ["in_progress","ready"].includes(status) ? copy.deliver : copy.reply;
+  const task = (item:OrderPage["items"][number]) => item.status==="paid" && item.delivery_mode && item.delivery_mode!=="manual" ? (lang==="fa"?"پیگیری تحویل خودکار":"Automatic delivery") : item.status === "awaiting_receipt" ? copy.receipt : item.status === "paid" ? copy.review : ["in_progress","ready"].includes(item.status) ? copy.deliver : copy.reply;
   const clearSearch = () => { setPage(1); setOrderSearchDraft(""); setOrderSearch(""); };
   const select = (value:string) => { setPage(1); setOrderStatus(value); };
   return <div className="work-page task-board">
     <header className="task-heading"><div><h1>{copy.title}<span>{data.counts.actionable}</span></h1><p>{copy.subtitle}</p></div><div className="work-search" role="search"><Search/><label className="sr-only" htmlFor="order-search">{copy.search}</label><input id="order-search" value={orderSearchDraft} onChange={(event) => setOrderSearchDraft(event.target.value)} placeholder={copy.search} autoComplete="off" enterKeyHint="search"/>{(orderSearchDraft || orderSearch) && <button type="button" onClick={clearSearch} aria-label={t("clearFilters")}><X/></button>}</div></header>
     <nav className="task-stages" aria-label={t("filters")}>{filters.map(([value,label,count,Icon],index) => <button key={value} aria-pressed={orderStatus === value} onClick={() => select(value)}><span className="task-stage-top"><Icon/><b>{new Intl.NumberFormat(lang === "fa" ? "fa-IR" : "en-US").format(count)}</b></span><span>{label}</span><small>{index === 0 ? (lang === "fa" ? "شروع از اینجا" : "Start here") : index === 1 ? (lang === "fa" ? "آماده‌سازی برنامه" : "Prepare the plan") : (lang === "fa" ? "تکمیل اطلاعات" : "Complete the brief")}</small></button>)}</nav>
-    <div className="task-list-toolbar"><div><button aria-pressed={orderStatus === "all"} onClick={() => select("all")}>{copy.all}<b>{data.counts.actionable}</b></button>{(data.counts.receipts > 0 || orderStatus === "awaiting_receipt") && <button aria-pressed={orderStatus === "awaiting_receipt"} onClick={() => select("awaiting_receipt")}><CreditCard/>{copy.receipt}<b>{data.counts.receipts}</b></button>}</div><span>{copy.sorted}</span></div>
-    {data.items.length ? <div className="task-list">{data.items.map((item) => { const name=displayName(item,lang); const userId=item.customer_id ?? item.user_id; return <button className={`task-card status-${item.status}`} key={item.id} onClick={() => openDrawer({type:"order",id:item.id})} aria-label={`${task(item.status)}: ${name}, ${item.product_title}`}>
+    <div className="task-list-toolbar"><div><button aria-pressed={orderStatus === "all"} onClick={() => select("all")}>{copy.all}<b>{data.counts.actionable}</b></button>{(data.counts.receipts > 0 || orderStatus === "awaiting_receipt") && <button aria-pressed={orderStatus === "awaiting_receipt"} onClick={() => select("awaiting_receipt")}><CreditCard/>{copy.receipt}<b>{data.counts.receipts}</b></button>}</div><button aria-pressed={orderStatus==="automatic"} onClick={()=>select("automatic")}>{lang==="fa"?"تحویل خودکار":"Automatic delivery"}<b>{data.counts.automatic??0}</b></button><span>{copy.sorted}</span></div>
+    {data.items.length ? <div className="task-list">{data.items.map((item) => { const name=displayName(item,lang); const userId=item.customer_id ?? item.user_id; return <button className={`task-card status-${item.status}`} key={item.id} onClick={() => openDrawer({type:"order",id:item.id})} aria-label={`${task(item)}: ${name}, ${item.product_title}`}>
       <span className="task-client">{userId ? <ConversationAvatar userId={userId} name={name}/> : <span className="conversation-avatar" aria-hidden="true">{initial(name)}</span>}<span><strong>{name}</strong><bdi>U{String(userId ?? item.telegram_id ?? 0).padStart(6,"0")}</bdi></span></span>
       <span className="task-product"><strong>{item.product_title}</strong><span><bdi>{orderCode(item.id)}</bdi><time>{formatDate(item.created_at,lang)}</time></span></span>
-      <span className="task-status"><Status value={item.status} lang={lang}/><small>{item.payment_method === "zarinpal" && item.payment_status === "paid" ? (lang === "fa" ? "تأیید خودکار زرین‌پال" : "Verified by ZarinPal") : item.paid_at ? copy.paid : money(item.amount,lang)}</small></span>
-      <span className="task-cta">{task(item.status)}{lang === "fa" ? <ArrowLeft/> : <ArrowRight/>}</span>
+      <span className="task-status"><Status value={item.status==="paid" && item.delivery_mode && item.delivery_mode!=="manual" ? "automatic" : item.status} lang={lang}/><small>{item.payment_method === "zarinpal" && item.payment_status === "paid" ? (lang === "fa" ? "تأیید خودکار زرین‌پال" : "Verified by ZarinPal") : item.paid_at ? copy.paid : money(item.amount,lang)}</small></span>
+      <span className="task-cta">{task(item)}{lang === "fa" ? <ArrowLeft/> : <ArrowRight/>}</span>
     </button>; })}</div> : <Glass className="work-empty"><Empty text={orderSearch || orderStatus !== "all" ? copy.noResult : copy.cleared}/>{(orderSearch || orderStatus !== "all") && <button className="button secondary" onClick={() => { clearSearch(); select("all"); }}>{t("clearFilters")}</button>}</Glass>}
     <Pager page={pages.orders} total={data.total} size={data.pageSize} t={t} onChange={setPage}/></div>;
 }

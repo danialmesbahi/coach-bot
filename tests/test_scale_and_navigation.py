@@ -14,8 +14,8 @@ def test_console_navigation_keeps_content_while_loading_and_coalesces_events():
     client = open("web/src/components/console-app.tsx", encoding="utf-8").read()
     css = open("web/src/app/globals.css", encoding="utf-8").read()
     assert "cache.current[path]" in client and "renderedView" in client
-    assert "refreshTimer.current === null" in client
-    assert "Object.keys(cache.current).length >= 24" in client and "1_000" in client
+    assert "if (refreshTimer.current !== null) return" in client
+    assert "Object.keys(cache.current).length >= 24" in client and "2_000" in client
     assert "realtimeTables[viewRef.current].includes(update.table)" in client
     menu = open("web/src/components/select-menu.tsx", encoding="utf-8").read()
     assert 'event.key === "ArrowDown"' in menu and 'role="option"' in menu
@@ -60,7 +60,7 @@ def test_console_requests_fail_fast_and_open_chat_refreshes_live():
     api = open("web/src/lib/api.ts", encoding="utf-8").read()
     assert "15_000" in api and "controller.abort()" in api
     assert "JSON.parse(text)" in api and '"invalid_response"' in api
-    assert "realtimeVersion={refresh}" in client
+    assert "realtimeVersion={detailRefresh}" in client
     assert "delete cache.current[pathRef.current]" in client
     assert "if (opened)" in client
     assert "avatarSources" in client and "avatarLoads" in client
@@ -111,25 +111,18 @@ def test_dashboard_exposes_total_users_and_ordered_quick_actions():
 def test_customer_cards_use_spacious_image_led_layout():
     client = open("web/src/components/console-app.tsx", encoding="utf-8").read()
     css = open("web/src/app/globals.css", encoding="utf-8").read()
-    assert 'className="customer-name"' in client and 'className="customer-code"' in client
-    assert 'className="customer-footer"' in client and 'className="customer-message"' in client
-    assert 'className="customer-action"' not in client
-    assert ".customer-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:24px}" in css
-    assert ".customer-card{aspect-ratio:auto;min-height:0;border-radius:24px;translate:none}" in css
-    assert ".customer-photo{height:auto;aspect-ratio:1/1;border-radius:0 0 28px 28px" in css
-    assert ".customer-photo .customer-code{inset-inline-start:auto;inset-inline-end:12px}" in css
-    assert ".customer-name{text-align:center}" in css
+    assert 'className="customer-profile-action"' in client and 'className="customer-code"' in client
+    assert 'className="customer-identity"' in client and 'className="customer-card-stats"' in client
+    assert 'className="customer-open-profile"' in client and 'className="customer-message"' in client
+    assert '.customer-grid{display:grid' in css
+    assert '.customer-card-actions{display:grid' in css
     customers = client[client.index("function CustomerTools"):client.index("function Orders")]
     assert 't("spent")' not in customers
-    assert ".customer-footer dl{flex:1;min-width:0;margin:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr))" in css
-    assert '[dir="rtl"] .customer-footer{flex-direction:row-reverse}' in css
-    assert '.customer-footer dt{min-height:28px;display:flex;align-items:flex-end;justify-content:center' in css
-    assert '[dir="rtl"] .customer-photo .customer-code{left:12px;right:auto}' in css
     assert '.customer-card{height:100%}.customer-profile-action{flex:1;display:flex;flex-direction:column}' in css
     assert 'const hasFilters = Boolean(searchDraft || filters.activity !== "all"' in client
     assert 'disabled={!hasFilters}' in client
     assert 'SelectMenu compact compactDefault={compact[0]} label={t("activityFilter")}' in client
-    assert 'lang === "en" ? "Active" : t("activeCourses")' in client
+    assert 't("activeCourses")' in client
     assert 'compactDefault={compact[0]}' in client
     assert 'Search name, @handle, U-code or ID…' in open("web/src/lib/i18n.ts", encoding="utf-8").read()
     assert '.customer-footer{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))' in css

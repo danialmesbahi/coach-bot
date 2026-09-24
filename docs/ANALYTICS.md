@@ -41,4 +41,12 @@ Telemetry begins at deployment; older sales/audit data remains available. Step c
 
 ## Checks
 
+### Report navigation
+
+- Sales separates **current work** from selected-period revenue and conversion. Product revenue spans the report width.
+- Bot & website separates collector freshness (not uptime) from request failures, slow routes and purchase-form interactions. No raw technical accordion. Top 10 error groups and 8 slow routes are shown; JSON export retains all groups.
+- Response time combines outcome groups using request-count weighting, not an average of averages. Payment checkout events are not treated as timed API requests. Browser events remain separate from server request-failure totals.
+- Team activity puts the shared activity log first and member contribution cards alongside it on desktop, below it on mobile. Staff see personal scope only.
+- Tests include missing/stale collectors, empty data, failed refresh/retry, landscape and staff access.
+
 `python -m pytest tests/test_analytics.py -q` checks authorization, bounds and privacy. `scripts/verify_analytics.py` runs migrations and reconciliation/isolation queries in its own disposable PostgreSQL database. Pipe it to a one-off app container with `python -`; it drops only the database it created. `web/tests/analytics-ui.mjs` uses mocked API responses for FA/EN, light/dark, scope/filter transitions and widths 375/820/1440. These checks are not a concurrent-user load test or physical iPhone test.
