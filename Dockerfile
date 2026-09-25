@@ -6,6 +6,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 COPY alembic ./alembic
+COPY scripts/setup_staff_password.py ./scripts/setup_staff_password.py
 COPY alembic.ini entrypoint.sh ./
 RUN mkdir -p /app/catalog-files /app/diagnostics && chown -R app:app /app && chmod +x /app/entrypoint.sh
 USER app

@@ -7,6 +7,7 @@ import argparse
 import asyncio
 import json
 import re
+import sys
 from pathlib import Path
 
 import asyncpg
@@ -20,7 +21,10 @@ async def main():
     parser.add_argument('--telegram-id', type=int, required=True)
     parser.add_argument('--credentials-file', type=Path, required=True)
     args = parser.parse_args()
-    credentials = json.loads(args.credentials_file.read_text(encoding='utf-8'))
+    source = sys.stdin.buffer.read(4097) if str(args.credentials_file) == '-' else args.credentials_file.read_bytes()
+    if len(source) > 4096:
+        raise ValueError('Credentials file is too large')
+    credentials = json.loads(source)
     username = credentials['username']
     if not isinstance(username, str) or not re.fullmatch(r'[a-zA-Z0-9_.-]{3,40}', username):
         raise ValueError('Invalid username')

@@ -14,18 +14,35 @@ server {
     ssl_session_cache shared:SSL:10m;
     ssl_prefer_server_ciphers off;
 
-    client_max_body_size 51m;
+    # Inner ingress enforces route-specific upload limits. Stream request bodies
+    # here so approved catalog videos do not hit an unrelated edge limit.
+    client_max_body_size 0;
+    client_body_timeout 20s;
+    proxy_request_buffering off;
+
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header Connection "";
+    proxy_buffering off;
 
     location / {
         proxy_pass http://127.0.0.1:8090;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $remote_addr;
-        proxy_set_header X-Forwarded-Proto https;
-        proxy_set_header Connection "";
         proxy_read_timeout 70s;
-        proxy_buffering off;
+    }
+
+    location = /api/catalog-assets {
+        proxy_pass http://127.0.0.1:8090;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    location ~ ^/api/orders/[0-9]+/plan$ {
+        proxy_pass http://127.0.0.1:8090;
+        proxy_read_timeout 900s;
+        proxy_send_timeout 900s;
     }
 }
 

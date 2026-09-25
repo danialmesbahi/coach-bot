@@ -20,7 +20,7 @@ Only nginx ingress publishes port 8090. It proxies web UI to `web:3000`, API/med
 
 Copy `.env.example` and `.env.live.example` to their non-example names and fill credentials locally. `.env.live` overrides `.env`. Never commit these files or database/browser backups.
 
-For an Internet-facing VPS, bind port 8090 to loopback and terminate HTTPS at the edge described in `deploy/nginx.conf.example`. Add only that edge's verified source address in `deploy/trusted-proxies.conf`; it must overwrite `X-Real-IP`. Do not trust a whole LAN or arbitrary forwarding headers. Tunnels without reliable client identity intentionally share an IP bucket: configure/validate the edge before multi-user production use. Standalone Next development is not a public ingress.
+For an Internet-facing VPS, port 8090 binds to loopback by default and HTTPS terminates at the edge described in `deploy/nginx.conf.example`. Set `INGRESS_BIND_IP=0.0.0.0` only for intentional local-network testing. Add only that edge's verified source address in `deploy/trusted-proxies.conf`; it must overwrite `X-Real-IP`. Do not trust a whole LAN or arbitrary forwarding headers. Tunnels without reliable client identity intentionally share an IP bucket: configure/validate the edge before multi-user production use. Standalone Next development is not a public ingress.
 
 `APP_ENV=production` requires real credentials, HTTPS, webhook secret, and a non-mock payment mode. Changing code does not activate a real merchant. Back up before migration; bot runs migrations by default, API does not.
 

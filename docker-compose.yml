@@ -140,7 +140,7 @@ services:
       - ./deploy/ingress.conf:/etc/nginx/conf.d/default.conf:ro
       - ./deploy/trusted-proxies.conf:/etc/nginx/trusted-proxies.conf:ro
     ports:
-      - "0.0.0.0:8090:3000"
+      - "${INGRESS_BIND_IP:-127.0.0.1}:8090:3000"
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
     depends_on:

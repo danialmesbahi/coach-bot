@@ -44,6 +44,8 @@ pnpm dev
 
 راهنمای معماری، تست و تنظیم امن پروکسی: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). فایل‌های `.env` و بکاپ‌ها نباید به GitHub فرستاده شوند.
 
+راهنمای راه‌اندازی سرور تازه و پایگاه‌دادهٔ خالی: [docs/LAUNCH.md](docs/LAUNCH.md).
+
 Migration به‌صورت پیش‌فرض در startup اجرا می‌شود (`MIGRATE_ON_START=true`). اگر ترجیح می‌دهی migration دستی باشد:
 
 ```env

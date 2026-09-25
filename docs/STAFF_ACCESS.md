@@ -16,7 +16,7 @@ There is at most one leader. Self-disable through team management is rejected. A
 
 ## Onboarding and recovery
 
-1. The local operator initializes the seeded development owner's username/password once, using `scripts/setup_staff_password.py --telegram-id ID --credentials-file /path/to/private.json`. The file contains `username` and `password`, belongs outside Git and Docker build contexts, and should be removed after the initial password is changed. This script refuses to overwrite an existing password.
+1. The local operator initializes the seeded development owner's username/password once, using `scripts/setup_staff_password.py --telegram-id ID --credentials-file - < /path/to/private.json` inside `web-api`. The file contains `username` and `password`, belongs outside Git and Docker build contexts, and should be removed after the initial password is changed. This script refuses to overwrite an existing password. See `docs/LAUNCH.md` for the Docker command.
 2. Sign in with username and password. No Telegram approval, signed widget, test login or invitation endpoint exists.
 3. Profile/team → Members → Add member: set name, username, initial password, role and permissions. No Telegram ID is required. Share credentials through a private channel.
 4. Every member can change their own password in My profile, supplying the current password.
