@@ -49,5 +49,12 @@ server {
 server {
     listen 80;
     server_name BOT_DOMAIN;
-    return 301 https://$host$request_uri;
+
+    # Certbot's webroot challenge must stay reachable for automatic renewal.
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+    location / {
+        return 301 https://$host$request_uri;
+    }
 }
