@@ -1,8 +1,11 @@
 import argparse
 import asyncio
+import json
 import statistics
 import time
 from collections import Counter
+from pathlib import Path
+from urllib.parse import urlsplit
 
 import aiohttp
 
@@ -16,7 +19,14 @@ PATHS = (
 )
 
 
-async def run(base_url: str, requests: int, concurrency: int) -> int:
+async def run(base_url: str, requests: int, concurrency: int, credentials_file: Path) -> int:
+    if urlsplit(base_url).scheme != "http" or urlsplit(base_url).hostname not in {"localhost", "127.0.0.1"}:
+        raise ValueError("Smoke checks must target a local HTTP service")
+    if requests > 150:
+        raise ValueError("Keep smoke checks below the API's per-minute rate limit")
+    credentials = json.loads(credentials_file.read_text(encoding="utf-8"))
+    if not isinstance(credentials, dict) or not credentials.get("username") or not credentials.get("password"):
+        raise ValueError("Credentials file needs username and password")
     timeout = aiohttp.ClientTimeout(total=15)
     connector = aiohttp.TCPConnector(limit=concurrency)
     async with aiohttp.ClientSession(
@@ -24,9 +34,13 @@ async def run(base_url: str, requests: int, concurrency: int) -> int:
         connector=connector,
         cookie_jar=aiohttp.CookieJar(unsafe=True),
     ) as session:
-        async with session.post(f"{base_url}/api/auth/dev") as login:
+        async with session.post(
+            f"{base_url}/api/auth/password",
+            json=credentials,
+            headers={"Origin": base_url, "X-Login-Request": "1"},
+        ) as login:
             if login.status != 200:
-                print(f"dev login unavailable: HTTP {login.status}")
+                print(f"password login unavailable: HTTP {login.status}")
                 return 2
 
         semaphore = asyncio.Semaphore(concurrency)
@@ -57,7 +71,8 @@ async def run(base_url: str, requests: int, concurrency: int) -> int:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", default="http://127.0.0.1:8090")
-    parser.add_argument("--requests", type=int, default=500)
-    parser.add_argument("--concurrency", type=int, default=50)
+    parser.add_argument("--credentials-file", type=Path, required=True)
+    parser.add_argument("--requests", type=int, default=100)
+    parser.add_argument("--concurrency", type=int, default=10)
     args = parser.parse_args()
-    raise SystemExit(asyncio.run(run(args.url.rstrip("/"), max(1, args.requests), max(1, args.concurrency))))
+    raise SystemExit(asyncio.run(run(args.url.rstrip("/"), max(1, args.requests), max(1, args.concurrency), args.credentials_file)))

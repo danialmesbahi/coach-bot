@@ -37,7 +37,7 @@ def test_web_console_has_responsive_theme_and_role_service():
     client = open("app/web/app.js", encoding="utf-8").read()
     service = open("app/webapp.py", encoding="utf-8").read()
     assert '@media (max-width:900px)' in css and 'data-theme="dark"' in css
-    assert "app.webapp" in compose and '0.0.0.0:8090:3000' in compose
+    assert "app.webapp" in compose and '${INGRESS_BIND_IP:-127.0.0.1}:8090:3000' in compose
     assert "BACKEND_URL: http://web-api:8090" in compose
     assert 'data-sales-period' in client and 'data-sales-gate' in client
     assert "Math.round(slot*(total-1)/(limit-1))" in client

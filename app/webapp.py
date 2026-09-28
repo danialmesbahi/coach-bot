@@ -108,6 +108,8 @@ async def security_headers(request: web.Request, handler):
         result.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     if request.path.startswith("/api/"):
         result.headers["Cache-Control"] = "no-store"
+    if isinstance(result, web.HTTPException):
+        raise result
     return result
 
 
@@ -159,7 +161,6 @@ async def _session_actor(request: web.Request):
 @web.middleware
 async def errors(request: web.Request, handler):
     request_id=secrets.token_hex(8)
-    request['request_id']=request_id
     try:
         result=await handler(request)
         result.headers['X-Request-ID']=request_id

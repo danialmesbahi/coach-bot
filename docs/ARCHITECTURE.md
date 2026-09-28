@@ -44,6 +44,6 @@ Before committing: `python scripts/check_secrets.py`. This inspects staged conte
 - Run one polling bot. Photo/FSM locks are process-local; multiple bot workers need coordinated state handling first.
 - Upload concurrency, media/cache byte budgets, API pagination and SSE subscriber count are bounded. Rejected load must be retried with backoff, not tight loops.
 - Search and paging still use database aggregation; test realistic row counts and query plans before claiming thousands of concurrent users.
-- `scripts/load_smoke.py` is a development-only smoke helper, not proof of production capacity. Never enable development login in production to run it.
+- `scripts/load_smoke.py` is a local-only, password-authenticated smoke helper (`--credentials-file`), not proof of production capacity. It caps requests below the API rate limit.
 - A paid callback settles before Telegram notification. If Telegram notification fails, order data stays paid; guaranteed notification delivery/reconciliation is not implemented.
 - Native iPhone PWA keyboard behavior still requires real-device checks; desktop viewport tests cannot certify it.

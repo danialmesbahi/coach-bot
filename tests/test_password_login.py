@@ -49,6 +49,9 @@ def test_password_login_boundary(monkeypatch, scenario):
                 yield b'x' * 2049
             result = await client.post('/api/auth/password',data=chunks() if scenario == 'chunked' else body,headers=headers)
             assert result.status == expected
+            assert result.headers['X-Content-Type-Options'] == 'nosniff'
+            assert result.headers['Cache-Control'] == 'no-store'
+            assert result.headers['X-Request-ID']
             if expected == 200:
                 authenticate.assert_awaited_once()
                 data = json.loads(redis.setex.await_args.args[2])
