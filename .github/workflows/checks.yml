@@ -76,5 +76,6 @@ jobs:
           node-version: "24"
       - run: corepack enable && pnpm install --frozen-lockfile
       - run: pnpm lint
-      - run: pnpm exec tsc --noEmit
+      # next build generates next-env.d.ts (image module types), so typecheck after it
       - run: pnpm build
+      - run: pnpm exec tsc --noEmit
