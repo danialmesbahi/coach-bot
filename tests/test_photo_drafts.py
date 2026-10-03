@@ -1,5 +1,6 @@
 import asyncio
 from pathlib import Path
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -31,6 +32,7 @@ class FakeBot:
 class FakeMessage:
     def __init__(self, bot, message_id, user_id, file_id=None, media_group_id=None):
         self.bot=bot; self.message_id=message_id; self.media_group_id=media_group_id
+        self.date=datetime(2026,10,3,tzinfo=timezone.utc)
         self.from_user=SimpleNamespace(id=user_id); self.chat=SimpleNamespace(id=user_id)
         self.photo=[SimpleNamespace(file_id=file_id,file_size=100)] if file_id else []
 
@@ -166,14 +168,14 @@ def test_empty_replacement_can_always_go_back_in_purchase_and_edit():
     asyncio.run(scenario())
 
 
-def test_photo_flows_read_and_update_the_same_latest_course():
+def test_profile_edits_do_not_change_order_photos():
     root=Path(__file__).resolve().parents[1]
     user_source=(root / 'app/handlers/user.py').read_text(encoding='utf-8')
     edit_source=(root / 'app/handlers/edit.py').read_text(encoding='utf-8')
     repo_source=(root / 'app/db/repositories.py').read_text(encoding='utf-8')
-    assert 'course_photos=await repo.latest_course_photos(uid)' in user_source
-    assert 'current=normalize_photos(await repo.latest_course_photos(tg_id))' in edit_source
-    assert 'update_body_photos_for_latest_course(m.from_user.id,photos)' in edit_source
+    assert 'previous_photos=[]' in user_source
+    assert "current=normalize_photos((await repo.get_user(tg_id) or {}).get('body_photo_file_ids'))" in edit_source
+    assert 'update_body_photos_for_latest_course(m.from_user.id,photos)' not in edit_source
     assert "ORDER BY o.created_at DESC,o.id DESC LIMIT 1" in repo_source
 
 
@@ -182,7 +184,7 @@ def test_edit_callback_uses_the_customer_id_not_the_bot_message_author():
         bot=FakeBot(); customer_id=800005
         message=FakeMessage(bot,70,8697023888)
         state=FakeState()
-        with patch('app.handlers.edit.repo.latest_course_photos',AsyncMock(return_value=[{'file_id':'latest','type':'photo'}])) as latest, \
+        with patch('app.handlers.edit.repo.get_user',AsyncMock(return_value={'body_photo_file_ids':[{'file_id':'latest','type':'photo'}]})) as latest, \
              patch('app.handlers.edit._show_edit_photo_prompt',AsyncMock()):
             await _begin_edit(message,state,'body_photo_file_ids',customer_id)
         latest.assert_awaited_once_with(customer_id)
@@ -211,4 +213,4 @@ def test_purchase_summary_has_confirmation_buttons_on_the_summary_message():
 
 def test_returning_customer_refreshes_notes_in_the_five_step_purchase_flow():
     profile={'name':'کاربر','phone':'1','age':20,'gender':'مرد','height_cm':180,'weight_kg':80,'goal':'هدف','training_history':'سابقه','notes':'قدیمی'}
-    assert purchase_route('training',profile) == ['age','height','weight','notes','body_photo']
+    assert purchase_route('training',profile) == ['age','height','weight','measurements','notes','body_photo']

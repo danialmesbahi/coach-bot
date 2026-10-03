@@ -1,6 +1,7 @@
 """Exercise payment/work transitions without sending real Telegram messages."""
 import asyncio
 import json
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -22,7 +23,14 @@ class Request(dict):
 
 @pytest.fixture
 def repo(monkeypatch):
+    from app.services import client_records
     mocks = {}
+    mocks['request_information']=AsyncMock(return_value=12)
+    monkeypatch.setattr(client_records,'request_information',mocks['request_information'])
+    @asynccontextmanager
+    async def acquire():
+        yield SimpleNamespace(execute=AsyncMock())
+    monkeypatch.setattr(webapp.db,'acquire',acquire)
     for name in ("get_order", "update_order_status", "approve_card_payment", "reject_card_payment", "add_audit", "add_support_message"):
         mocks[name] = AsyncMock(return_value={"id": 42})
         monkeypatch.setattr(webapp.repo, name, mocks[name])
@@ -56,14 +64,14 @@ def test_verified_order_can_start_design(repo):
     assert request.app["read_cache"] == {}
 
 
-def test_information_request_is_saved_and_visible_in_conversation(repo):
+def test_information_request_is_order_bound_and_not_a_chat_message(repo):
     request = Request({"action":"needs_info", "message":"  Please send your injury history.  "})
     result = asyncio.run(webapp.order_action(request))
     assert json.loads(result.text)["notification_sent"] is True
-    repo["update_order_status"].assert_awaited_once_with(42, "needs_info")
-    assert repo["add_audit"].await_args.args[-1] == {"message":"Please send your injury history."}
-    assert repo["add_support_message"].await_args.kwargs["sender_telegram_id"] is request["actor"]
-    assert "ORD-000042" in repo["add_support_message"].await_args.kwargs["content_text"]
+    repo['request_information'].assert_awaited_once_with(request['actor'],42,'Please send your injury history.')
+    repo['add_support_message'].assert_not_awaited()
+    markup=request.app['bot'].send_message.await_args.kwargs['reply_markup']
+    assert markup.inline_keyboard[0][0].callback_data=='info:12'
 
 
 def test_failed_notification_reports_saved_state_instead_of_retrying_transition(repo):
@@ -71,7 +79,7 @@ def test_failed_notification_reports_saved_state_instead_of_retrying_transition(
     request.app["bot"].send_message.side_effect = RuntimeError("Telegram unavailable")
     result = asyncio.run(webapp.order_action(request))
     assert json.loads(result.text) == {"ok":True, "notification_sent":False}
-    repo["add_audit"].assert_awaited_once()
+    repo['request_information'].assert_awaited_once()
     repo["add_support_message"].assert_not_awaited()
 
 

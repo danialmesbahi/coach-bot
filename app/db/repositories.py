@@ -79,53 +79,6 @@ async def update_user(tg_id: int, **fields):
         await c.execute(f"UPDATE users SET {sql}, updated_at=NOW() WHERE telegram_id=$1", tg_id, *values)
 
 
-async def update_latest_course_snapshot(tg_id: int, **fields):
-    """Keep a profile edit attached to the customer's latest non-cancelled course only."""
-    if not fields:
-        return
-    async with db.acquire() as c:
-        async with c.transaction():
-            row=await c.fetchrow("""
-                SELECT o.id,o.form_snapshot,u.id AS user_id
-                FROM orders o JOIN users u ON u.id=o.user_id
-                WHERE u.telegram_id=$1 AND (o.status<>'cancelled' OR o.paid_at IS NOT NULL)
-                ORDER BY o.created_at DESC,o.id DESC
-                LIMIT 1 FOR UPDATE
-            """,tg_id)
-            if not row:
-                return
-            snapshot=_json_object(row['form_snapshot'])
-            snapshot.update(fields)
-            encoded=json.dumps(snapshot,ensure_ascii=False)
-            await c.execute("UPDATE orders SET form_snapshot=$2::jsonb,updated_at=NOW() WHERE id=$1",row['id'],encoded)
-            await c.execute("UPDATE user_profile_history SET snapshot=$2::jsonb WHERE user_id=$1 AND order_id=$3",row['user_id'],encoded,row['id'])
-
-
-async def update_body_photos_for_latest_course(tg_id: int, photos: list[dict]) -> bool:
-    """Atomically attach edited body photos to the user and their latest course."""
-    encoded_photos=json.dumps(photos,ensure_ascii=False)
-    last_file_id=photos[-1]['file_id'] if photos else None
-    async with db.acquire() as c:
-        async with c.transaction():
-            user=await c.fetchrow("SELECT id FROM users WHERE telegram_id=$1 FOR UPDATE",tg_id)
-            if not user:
-                return False
-            row=await c.fetchrow("""
-                SELECT id,form_snapshot FROM orders
-                WHERE user_id=$1 AND (status<>'cancelled' OR paid_at IS NOT NULL)
-                ORDER BY created_at DESC,id DESC LIMIT 1 FOR UPDATE
-            """,user['id'])
-            if not row:
-                return False
-            snapshot=_json_object(row['form_snapshot'])
-            snapshot['body_photo_file_id']=last_file_id
-            snapshot['body_photo_file_ids']=photos
-            encoded_snapshot=json.dumps(snapshot,ensure_ascii=False)
-            await c.execute("UPDATE users SET body_photo_file_id=$2,body_photo_file_ids=$3::jsonb,updated_at=NOW() WHERE id=$1",user['id'],last_file_id,encoded_photos)
-            await c.execute("UPDATE orders SET form_snapshot=$2::jsonb,updated_at=NOW() WHERE id=$1",row['id'],encoded_snapshot)
-            await c.execute("UPDATE user_profile_history SET snapshot=$2::jsonb WHERE user_id=$1 AND order_id=$3",user['id'],encoded_snapshot,row['id'])
-            return True
-
 async def get_products(active_only=True):
     async with db.acquire() as c:
         q = "SELECT * FROM products WHERE active=TRUE ORDER BY sort_order" if active_only else "SELECT * FROM products ORDER BY sort_order"
@@ -189,6 +142,8 @@ async def get_product(product_id: int):
 
 async def create_order(tg_id: int, product: dict, data: dict, payment_method: str, renewal_of_order_id: int | None = None):
     from app.services.catalog import purchase_terms
+    if payment_method not in {'zarinpal', 'mock'}:
+        raise ValueError('payment method disabled')
     async with db.acquire() as c:
         async with c.transaction():
             user = await c.fetchrow("SELECT id FROM users WHERE telegram_id=$1 FOR UPDATE", tg_id)
@@ -197,6 +152,11 @@ async def create_order(tg_id: int, product: dict, data: dict, payment_method: st
             if not current_product or current_product['version']!=product.get('version',1):
                 raise ValueError('product changed')
             product=dict(current_product)
+            from app.utils.measurements import validate_measurements, required_body_photos
+            if 'measurements' in _json_list(product.get('form_fields')):
+                data={**data,'measurements':validate_measurements(data.get('measurements'),complete=True)}
+            if 'body_photo' in _json_list(product.get('form_fields')) and len(_json_list(data.get('body_photo_file_ids')))<required_body_photos(data):
+                raise ValueError('four body photos required')
             if renewal_of_order_id:
                 eligible=await c.fetchval("""
                   SELECT EXISTS(
@@ -228,6 +188,8 @@ async def create_order(tg_id: int, product: dict, data: dict, payment_method: st
                 user['id'], product.get('code'), row['id'], json.dumps(data, ensure_ascii=False)
             )
             photos=_json_list(data.get('body_photo_file_ids'))[:6]
+            if data.get('measurements'):
+                await c.execute('UPDATE users SET measurements=$2::jsonb,updated_at=NOW() WHERE id=$1',user['id'],json.dumps(data['measurements']))
             last_file_id=(photos[-1].get('file_id') if photos and isinstance(photos[-1],dict) else photos[-1] if photos else None)
             if 'body_photo' in _json_list(product.get('form_fields')): await c.execute(
                 "UPDATE users SET body_photo_file_id=$2,body_photo_file_ids=$3::jsonb,updated_at=NOW() WHERE id=$1",
@@ -389,12 +351,12 @@ async def renewable_orders(tg_id: int, limit: int = 10):
 
 async def list_sensi_orders(page: int = 1, page_size: int = 10, status: str | None = None, query: str = ""):
     page=max(1,page); page_size=max(1,min(page_size,20)); offset=(page-1)*page_size
-    status=status if status in {'awaiting_receipt','paid','needs_info','in_progress','automatic'} else None
+    status=status if status in {'paid','needs_info','in_progress','automatic'} else None
     query=query.strip().lower()[:80]
     async with db.acquire() as c:
         total=await c.fetchval("""
           SELECT COUNT(*) FROM orders o JOIN products p ON p.id=o.product_id JOIN users u ON u.id=o.user_id
-          WHERE o.status IN ('awaiting_receipt','paid','needs_info','in_progress','ready')
+          WHERE o.status IN ('paid','needs_info','in_progress','ready')
             AND ($1::text IS NULL OR o.status=$1 OR ($1='in_progress' AND o.status='ready') OR ($1='automatic' AND o.status='paid'))
             AND ($1 IS DISTINCT FROM 'paid' OR COALESCE(o.product_snapshot->>'delivery_mode','manual')='manual')
             AND ($1 IS DISTINCT FROM 'automatic' OR COALESCE(o.product_snapshot->>'delivery_mode','manual')<>'manual')
@@ -407,14 +369,14 @@ async def list_sensi_orders(page: int = 1, page_size: int = 10, status: str | No
                  COALESCE(o.product_snapshot->>'delivery_mode','manual') AS delivery_mode,
                  u.id AS customer_id,u.telegram_id,u.name,u.first_name,u.last_name,u.username
           FROM orders o JOIN products p ON p.id=o.product_id JOIN users u ON u.id=o.user_id
-          WHERE o.status IN ('awaiting_receipt','paid','needs_info','in_progress','ready')
+          WHERE o.status IN ('paid','needs_info','in_progress','ready')
             AND ($1::text IS NULL OR o.status=$1 OR ($1='in_progress' AND o.status='ready') OR ($1='automatic' AND o.status='paid'))
             AND ($1 IS DISTINCT FROM 'paid' OR COALESCE(o.product_snapshot->>'delivery_mode','manual')='manual')
             AND ($1 IS DISTINCT FROM 'automatic' OR COALESCE(o.product_snapshot->>'delivery_mode','manual')<>'manual')
             AND ($2='' OR LOWER(COALESCE(u.name,'') || ' ' || COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,'') || ' ' || COALESCE(u.username,'')) LIKE '%'||$2||'%'
               OR u.telegram_id::text=$2 OR o.id::text=$2 OR ('ORD-'||LPAD(o.id::text,6,'0')) ILIKE '%'||$2||'%'
               OR LOWER(COALESCE(o.product_snapshot->>'title',p.title)) LIKE '%'||$2||'%')
-          ORDER BY CASE o.status WHEN 'awaiting_receipt' THEN 1 WHEN 'paid' THEN 2 WHEN 'in_progress' THEN 3 WHEN 'ready' THEN 3 ELSE 4 END,
+          ORDER BY CASE o.status WHEN 'paid' THEN 2 WHEN 'in_progress' THEN 3 WHEN 'ready' THEN 3 ELSE 4 END,
                    o.created_at,o.id LIMIT $3 OFFSET $4
         """,status,query,page_size,offset)
         return [dict(r) for r in rows],int(total or 0)
@@ -424,8 +386,8 @@ async def sensi_dashboard_counts():
     async with db.acquire() as c:
         row=await c.fetchrow("""
           SELECT
-            (SELECT COUNT(*) FROM orders WHERE status IN ('awaiting_receipt','paid','needs_info','in_progress','ready')) AS actionable,
-            (SELECT COUNT(*) FROM orders WHERE status='awaiting_receipt') AS receipts,
+            (SELECT COUNT(*) FROM orders WHERE status IN ('paid','needs_info','in_progress','ready')) AS actionable,
+            0 AS receipts,
             (SELECT COUNT(*) FROM orders WHERE status='paid' AND COALESCE(product_snapshot->>'delivery_mode','manual')='manual') AS new_orders,
             (SELECT COUNT(*) FROM orders WHERE status='paid' AND COALESCE(product_snapshot->>'delivery_mode','manual')<>'manual') AS automatic,
             (SELECT COUNT(*) FROM orders WHERE status IN ('in_progress','ready')) AS designing,
@@ -468,7 +430,7 @@ async def customer_progress(page: int = 1, page_size: int = 10):
 async def update_order_status(order_id: int, status: str):
     transitions = {
         'paid': {'in_progress', 'needs_info', 'cancelled'},
-        'needs_info': {'in_progress', 'cancelled'},
+        'needs_info': {'cancelled'},
         'in_progress': {'needs_info', 'ready', 'cancelled'},
         'ready': {'delivered'},
     }
@@ -479,6 +441,8 @@ async def update_order_status(order_id: int, status: str):
             current = r['status']
             if current == status: return None
             if status not in transitions.get(current, set()): return None
+            if status=='in_progress':
+                await c.execute("UPDATE order_info_requests SET status='reviewed' WHERE order_id=$1 AND status='submitted'",order_id)
             row = await c.fetchrow("UPDATE orders SET status=$2, updated_at=NOW() WHERE id=$1 RETURNING *", order_id, status)
             return dict(row) if row else None
 
@@ -506,9 +470,12 @@ async def add_audit(actor: int | dict, action: str, target_type: str | None = No
 async def add_support_message(tg_id: int, message_id: int, direction: str = 'customer', sender_telegram_id: int | dict | None = None, reply_to_message_id: int | None = None, content_type: str = 'text', content_text: str | None = None, file_id: str | None = None, file_name: str | None = None, mime_type: str | None = None, file_size: int | None = None):
     actor = sender_telegram_id if isinstance(sender_telegram_id, dict) else None
     sender = actor.get('telegram_id') if actor else sender_telegram_id or tg_id
-    async with db.acquire() as c:
+    async with db.acquire() as c,c.transaction():
+        await c.execute('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',f'support:{tg_id}:{message_id}:{direction}')
         u = await c.fetchrow("SELECT id FROM users WHERE telegram_id=$1", tg_id)
         if u:
+            if await c.fetchval('SELECT 1 FROM support_messages WHERE user_id=$1 AND message_id=$2 AND direction=$3',u['id'],message_id,direction):
+                return
             await c.execute(
                 """INSERT INTO support_messages(user_id,message_id,direction,sender_telegram_id,reply_to_message_id,content_type,content_text,file_id,file_name,mime_type,file_size,sender_staff_id,sender_name)
                    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,
@@ -670,29 +637,13 @@ async def get_order_by_authority(authority:str):
         return dict(r) if r else None
 
 async def submit_receipt(order_id:int, file_id:str, receipt_type:str='photo'):
-    if receipt_type not in {'photo', 'document'}:
-        return None
-    async with db.acquire() as c:
-        r=await c.fetchrow("UPDATE orders SET receipt_file_id=$2, receipt_type=$3, payment_status='awaiting_review', status='awaiting_receipt', updated_at=NOW() WHERE id=$1 AND payment_method='card_to_card' AND status IN ('awaiting_payment','payment_rejected') RETURNING *", order_id,file_id,receipt_type)
-        return dict(r) if r else None
+    return None  # Historical callbacks cannot revive the retired payment method.
 
 async def approve_card_payment(order_id:int, actor:int | dict):
-    async with db.acquire() as c:
-        async with c.transaction():
-            r=await c.fetchrow("UPDATE orders SET payment_status='paid', status='paid', paid_at=COALESCE(paid_at,NOW()), updated_at=NOW() WHERE id=$1 AND payment_method='card_to_card' AND status='awaiting_receipt' RETURNING id",order_id)
-            if not r: return None
-            await _write_audit(c, actor, 'approve_card_payment', 'order', order_id)
-            full=await c.fetchrow("SELECT o.*,p.code AS product_code,COALESCE(o.product_snapshot->>'title',p.title) AS product_title,u.telegram_id,u.name,u.phone FROM orders o JOIN products p ON p.id=o.product_id JOIN users u ON u.id=o.user_id WHERE o.id=$1",order_id)
-            return dict(full) if full else None
+    return None
 
 async def reject_card_payment(order_id:int, actor:int | dict):
-    async with db.acquire() as c:
-        async with c.transaction():
-            r=await c.fetchrow("UPDATE orders SET payment_status='rejected', status='payment_rejected', updated_at=NOW() WHERE id=$1 AND payment_method='card_to_card' AND status='awaiting_receipt' RETURNING id",order_id)
-            if not r: return None
-            await _write_audit(c, actor, 'reject_card_payment', 'order', order_id)
-            full=await c.fetchrow("SELECT o.*,p.code AS product_code,COALESCE(o.product_snapshot->>'title',p.title) AS product_title,u.telegram_id,u.name,u.phone FROM orders o JOIN products p ON p.id=o.product_id JOIN users u ON u.id=o.user_id WHERE o.id=$1",order_id)
-            return dict(full) if full else None
+    return None
 
 async def mark_zarinpal_paid(order_id:int, ref:str):
     async with db.acquire() as c:

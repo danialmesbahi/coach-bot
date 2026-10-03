@@ -24,7 +24,7 @@ FIELDS = [
     ('supplements', 'مکمل‌ها'), ('notes', 'توضیحات'),
 ]
 ALLOWED = {key for key, _ in FIELDS}
-SNAPSHOT_KEYS = {'food_allergy': 'allergy', 'food_restriction': 'restriction'}
+
 
 
 def customer(_uid: int) -> bool:
@@ -39,9 +39,8 @@ async def _finish(m: Message, state: FSMContext, text: str):
     await show_profile(m)
 
 
-async def _save_latest_course_edit(tg_id: int, key: str, value):
+async def _save_profile_edit(tg_id: int, key: str, value):
     await repo.update_user(tg_id, **{key: value})
-    await repo.update_latest_course_snapshot(tg_id, **{SNAPSHOT_KEYS.get(key, key): value})
 
 
 async def _show_edit_photo_prompt(m: Message, state: FSMContext):
@@ -95,7 +94,7 @@ async def _begin_edit(m: Message, state: FSMContext, key: str, tg_id: int):
     await state.update_data(edit_key=key)
     await state.set_state(EditForm.value)
     if key == 'body_photo_file_ids':
-        current=normalize_photos(await repo.latest_course_photos(tg_id))
+        current=normalize_photos((await repo.get_user(tg_id) or {}).get('body_photo_file_ids'))
         await state.update_data(
             edit_photos=current,
             edit_previous_photos=current,
@@ -178,7 +177,7 @@ async def save_contact_edit(m: Message, state: FSMContext):
     phone=clean_text(contact.phone_number,32)
     if not phone or len(phone) < 7:
         return await m.answer('شماره تلفن معتبر دریافت نشد.')
-    await _save_latest_course_edit(m.from_user.id,'phone',phone)
+    await _save_profile_edit(m.from_user.id,'phone',phone)
     await _finish(m,state,'✅ شماره تلفن به‌روزرسانی شد.')
 
 
@@ -295,8 +294,7 @@ async def save_photo_edit(m: Message, state: FSMContext):
         if not photos:
             return await m.answer('حداقل یک عکس بفرست یا «لغو ویرایش» را بزن.')
         photos=stored_photos(photos)
-        if not await repo.update_body_photos_for_latest_course(m.from_user.id,photos):
-            return await m.answer('دوره‌ای برای ثبت این عکس‌ها پیدا نشد؛ ابتدا یک دوره تهیه کن.')
+        await repo.update_user(m.from_user.id,body_photo_file_ids=photos,body_photo_file_id=photos[-1]['file_id'])
         await _finish(m,state,f'✅ {len(photos)} عکس بدن ذخیره شد.')
 
 
@@ -329,5 +327,5 @@ async def save_edit(m: Message, state: FSMContext):
             value=None
     if key in {'age','height_cm','weight_kg'} and value is None:
         return await m.answer('مقدار واردشده معتبر نیست.')
-    await _save_latest_course_edit(m.from_user.id,key,value)
+    await _save_profile_edit(m.from_user.id,key,value)
     await _finish(m,state,'✅ اطلاعات با موفقیت به‌روزرسانی شد.')

@@ -18,9 +18,9 @@ def callbacks(markup):
 
 def test_payment_keyboard_only_shows_enabled_methods():
     assert callbacks(payment_methods_kb('mock')) == {'pay:mock', 'payment_back'}
-    assert callbacks(payment_methods_kb('card_to_card')) == {'pay:card', 'payment_back'}
+    assert callbacks(payment_methods_kb('card_to_card')) == {'payment_back'}
     assert callbacks(payment_methods_kb('zarinpal')) == {'pay:zarinpal', 'payment_back'}
-    assert callbacks(payment_methods_kb('both')) == {'pay:card', 'pay:zarinpal', 'payment_back'}
+    assert callbacks(payment_methods_kb('both')) == {'pay:zarinpal', 'payment_back'}
 
 
 def test_primary_and_destructive_actions_have_native_telegram_styles():
@@ -33,7 +33,7 @@ def test_primary_and_destructive_actions_have_native_telegram_styles():
 
 def test_returning_customer_gets_short_contiguous_purchase_route():
     profile={'name':'کاربر','phone':'09120000000','gender':'مرد','goal':'عضله‌سازی','training_history':'یک سال','notes':'-'}
-    assert purchase_route('training',profile) == ['age','height','weight','notes','body_photo']
+    assert purchase_route('training',profile) == ['age','height','weight','measurements','notes','body_photo']
     assert purchase_route('nutrition',{}) == PURCHASE_STEPS['nutrition']
 
 
@@ -142,8 +142,8 @@ def test_unsafe_payment_configuration_is_rejected():
         runtime_settings(app_env='production',payment_mode='mock').validate_runtime()
 
 
-def test_valid_production_card_configuration_passes():
+def test_valid_production_gateway_configuration_passes():
     runtime_settings(
-        app_env='production',payment_mode='card_to_card',public_base_url='https://bot.example',
-        webhook_secret='x'*32,card_to_card_bank_info='6037-xxxx به نام مربی',
+        app_env='production',payment_mode='zarinpal',zarinpal_merchant_id='merchant-test',public_base_url='https://bot.example',
+        webhook_secret='x'*32,
     ).validate_runtime()

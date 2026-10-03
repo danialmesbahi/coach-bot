@@ -7,6 +7,7 @@ import type {Lang,Session} from "@/lib/types";
 import {SelectMenu} from "./select-menu";
 
 const actions:Record<string,[string,string]>={
+  record_updated:["اصلاح اطلاعات پرونده","Client record updated"],client_file_added:["افزودن فایل به پرونده","Client file added"],
   staff_login:["ورود به پنل","Signed in"],reply_sent:["ارسال پیام","Message sent"],
   staff_profile:["ویرایش نام نمایشی","Display name updated"],staff_password_changed:["تغییر رمز عبور","Password changed"],
   staff_create:["افزودن همکار","Member added"],staff_permissions:["تغییر دسترسی همکار","Permissions updated"],

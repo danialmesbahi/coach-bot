@@ -14,10 +14,12 @@ from app.db.core import db
 PERMISSIONS = {
     'analytics.self': ('مشاهده شاخص‌ها و فعالیت شخصی', 'View own KPIs and activity'),
     'customers.read': ('مشاهده شاگردان و پرونده‌ها', 'View clients and records'),
+    'customers.edit': ('ویرایش اطلاعات پرونده', 'Edit client records'),
+    'customers.files': ('افزودن فایل به پرونده', 'Add client files'),
     'orders.read': ('مشاهده کارها و سفارش‌ها', 'View tasks and orders'),
     'orders.review': ('بررسی اطلاعات و شروع طراحی', 'Review briefs and start design'),
     'orders.deliver': ('ارسال برنامه نهایی', 'Deliver programs'),
-    'payments.review': ('بررسی رسید کارت‌به‌کارت', 'Review bank transfers'),
+    'payments.review': ('مشاهده رسیدهای تاریخی', 'View historical receipts'),
     'chats.read': ('خواندن گفت‌وگوها', 'Read conversations'),
     'chats.reply': ('پاسخ به شاگردان', 'Reply to clients'),
     'sales.read': ('مشاهده آمار مالی', 'View financial reports'),
@@ -26,11 +28,13 @@ PERMISSIONS = {
 TEMPLATES = {
     'support': ['customers.read', 'chats.read', 'chats.reply'],
     'designer': ['customers.read', 'orders.read', 'orders.review', 'orders.deliver'],
-    'finance': ['customers.read', 'orders.read', 'sales.read', 'payments.review'],
+    'finance': ['customers.read', 'orders.read', 'sales.read'],
     'observer': ['customers.read', 'orders.read'],
 }
 # Fail closed for every authenticated handler, including private media.
 ROUTE_PERMISSIONS = {
+    'client_record':'customers.read', 'client_file_upload':'customers.files',
+    'client_file':'client.files.read', 'client_file_list':'client.files.read', 'order_information':'records.read',
     'analytics': 'analytics.self',
     'client_error': None,
     'catalog':'catalog.manage','catalog_save':'catalog.manage','catalog_archive':'catalog.manage',
@@ -61,6 +65,8 @@ def can(actor, permission):
         return any(can(actor, item) for item in ('customers.read', 'orders.read', 'chats.read'))
     if permission == 'records.read':
         return can(actor, 'customers.read') or can(actor, 'orders.read')
+    if permission == 'client.files.read':
+        return can(actor,'records.read') or can(actor,'chats.read')
     return permission in actor.get('permissions', [])
 
 
@@ -73,6 +79,8 @@ def validate_permissions(values):
     if not isinstance(values, list) or len(values) > len(PERMISSIONS) or any(not isinstance(v, str) or v not in PERMISSIONS for v in values):
         raise ValueError('invalid_permissions')
     result = set(values)
+    if result & {'customers.edit','customers.files'}:
+        result.add('customers.read')
     for action, read in (('orders.review', 'orders.read'), ('orders.deliver', 'orders.read'), ('payments.review', 'orders.read'), ('chats.reply', 'chats.read')):
         if action in result:
             result.add(read)

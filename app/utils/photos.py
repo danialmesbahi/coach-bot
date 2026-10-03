@@ -39,7 +39,7 @@ def normalize_photos(raw) -> list[dict]:
         if isinstance(item, dict):
             file_id=item.get('file_id')
             kind=item.get('type', 'photo')
-            if file_id and kind in {'photo', 'document'}:
+            if (file_id or item.get('client_file_id')) and kind in {'photo', 'document'}:
                 result.append({**item, 'file_id': file_id, 'type': kind})
         elif item:
             result.append({'file_id': item, 'type': 'photo'})
@@ -49,7 +49,7 @@ def normalize_photos(raw) -> list[dict]:
 
 
 def stored_photos(raw) -> list[dict]:
-    return [{'file_id': item['file_id'], 'type': item['type']} for item in normalize_photos(raw)]
+    return [{key:item[key] for key in ('file_id','client_file_id','type','direction','captured_at') if key in item} for item in normalize_photos(raw)]
 
 
 async def edit_photo_status(bot, chat_id: int, message_id: int | None, text: str) -> bool:

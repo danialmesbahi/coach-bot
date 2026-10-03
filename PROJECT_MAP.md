@@ -25,9 +25,12 @@ edit router → customer router (private chats only; no web-login approval)
 | Change | Open first | Then |
 |---|---|---|
 | Customer menu, purchase, form, profile, order, support | `app/handlers/user.py` | `keyboards.py`, `states/forms.py`, `db/repositories.py` |
-| Coach/admin panel, receipt, plan, reports, buyers | `app/webapp.py` | `web/src/components/console-app.tsx`, `app/db/repositories.py` |
+| Coach/admin panel, plan, reports, users | `app/webapp.py` | `web/src/components/console-app.tsx`, `app/db/repositories.py` |
 | KPIs, personal/platform analytics, technical counters | `app/analytics_api.py`, `docs/ANALYTICS.md` | `app/services/telemetry.py`, `web/src/components/analytics.tsx`, `tests/test_analytics.py` |
 | Profile edit | `app/handlers/edit.py` | `db/repositories.py`, `utils/validation.py` |
+| Versioned profile/order edits, private files, additional information | `app/client_records_api.py`, `app/services/client_records.py` | `web/src/components/client-record.tsx`, `alembic/versions/0025_client_records.py` |
+| Historical/private media indexing and archive worker | `app/services/client_archive.py` | `services/content.py`, `main.py`, `scripts/verify_client_workflow.py` |
+| Fresh body measurements and purchase photos | `app/utils/measurements.py`, `app/handlers/user.py` | `utils/photos.py`, `tests/test_client_workflow.py` |
 | Payment gateway/callback | `services/payment.py`, `main.py` | `handlers/user.py`, `db/repositories.py` |
 | Configurable products, ready-made delivery, private channel memberships | `catalog_api.py`, `services/catalog.py`, `services/fulfillment.py` | `web/src/components/catalog.tsx`, `docs/PRODUCT_CATALOG.md` |
 | Data/status/reporting | `db/repositories.py` | `schema.sql`, latest Alembic migration |
@@ -39,11 +42,12 @@ edit router → customer router (private chats only; no web-login approval)
 
 ```text
 buy → PurchaseForm → users update + order snapshot → payment
-→ paid/receipt review → Sensi status → plan file_id → customer delivery
+→ server-verified payment → information review → design → customer delivery
 ```
 
-- A new order always refreshes age/height/weight/photos; stable profile values are reused.
-- Every order gets `form_snapshot` and profile history. Explicit profile edits update the latest enrolled order; earlier orders retain their own data.
+- A new assessment order refreshes age/height/weight/measurements/photos; stable profile values are reused. Four male photos are required; female photos remain optional.
+- Every order gets `form_snapshot` and profile history. Profile edits never mutate an order. Staff edits target either the current profile or a specific order and preserve revisions.
+- `docs/CLIENT_WORKFLOW_PLAN.md` contains the implemented flow and verification boundaries.
 - Ownership must use `get_user_order`; privileged callbacks must role-check.
 - Valid status transitions live in `update_order_status`; do not bypass them casually.
 - Amounts are stored/displayed as Toman despite the legacy `price_irr` column name; ZarinPal request/verify converts them to IRR.
@@ -51,15 +55,17 @@ buy → PurchaseForm → users update + order snapshot → payment
 ## UX contract
 
 - Customer: product → numbered questionnaire → review → payment → order detail/status → plan/support.
-- Recovery stays on the same order: failed gateway → «ادامه پرداخت»; rejected receipt → «ارسال رسید جدید»; cancellation preserves the record.
-- Sensi sees only actionable orders; pending receipts reopen with approve/reject controls, and orders/messages are paginated.
+- Recovery stays on the same order: failed gateway → «ادامه پرداخت»; cancellation preserves the record. Card transfer is retired; historical receipts are view-only.
+- Information requests expose a Telegram completion button and return submissions to the same task's review queue, not chat.
+- Paid customers use persistent chat: each valid message is saved immediately; only the explicit end button exits.
+- Orders/messages/files/revisions are paginated; media downloads run on a separate bounded archive worker.
 - One primary action per message, Persian status labels, immediate callback acknowledgement, and explicit retry text on recoverable failures.
 
 ## High-risk seams
 
 - Router order and shared `SupportForm` can swallow messages from another role.
 - Payment updates must remain atomic/idempotent; do not duplicate successful sales.
-- Telegram files are stored as file IDs, not local uploads; validate type and size.
+- Telegram references are retained alongside a permission-checked private archive. Hosted getFile archives at most 20 MB; larger/unavailable files retain a remote reference. Archive failures must never block payments.
 - New database fields require an Alembic migration; never require `down -v`.
 
 ## Verification map
@@ -71,6 +77,7 @@ buy → PurchaseForm → users update + order snapshot → payment
 | Roles, reports, buyers | `test_v126_admin_reports.py`, `test_static_integrity.py` |
 | Support/profile history | `test_v127_features.py`, `test_v128_profile_and_support.py` |
 | Payment hardening/recovery/UX | `test_hardening_and_ux.py` |
+| Client records, responses, payment retirement, chat | `tests/test_client_workflow.py`, `scripts/verify_client_workflow.py`, `web/tests/client-record-ui.mjs` |
 
 ## Graph usage
 

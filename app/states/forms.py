@@ -1,6 +1,7 @@
 from aiogram.fsm.state import State, StatesGroup
 
 class PurchaseForm(StatesGroup):
+    measurements = State()
     custom_question = State()
     name = State(); phone = State(); age = State(); gender = State(); height = State(); weight = State()
     allergy = State(); restriction = State(); supplements = State()
@@ -13,6 +14,9 @@ class SupportForm(StatesGroup):
     waiting = State()
 
 class NeedInfoForm(StatesGroup):
+    waiting = State()
+
+class CustomerInfoForm(StatesGroup):
     waiting = State()
 
 class PlanDelivery(StatesGroup):

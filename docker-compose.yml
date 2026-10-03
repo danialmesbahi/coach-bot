@@ -127,6 +127,44 @@ services:
       start_period: 5s
     logging: *default-logging
 
+  # Public landing page (main domain). Host Nginx proxies the main domain to 127.0.0.1:3100.
+  # Business identity and trust-seal IDs come from the server's .env (see docs/LAUNCH.md).
+  site:
+    build:
+      context: ./site
+      args: &site-env
+        SITE_URL: ${SITE_URL:-https://sensibot.ir}
+        BOT_USERNAME: ${BOT_USERNAME:-}
+        BUSINESS_LEGAL_NAME: ${BUSINESS_LEGAL_NAME:-}
+        BUSINESS_ADDRESS: ${BUSINESS_ADDRESS:-}
+        BUSINESS_POSTAL_CODE: ${BUSINESS_POSTAL_CODE:-}
+        BUSINESS_PHONE: ${BUSINESS_PHONE:-}
+        BUSINESS_EMAIL: ${BUSINESS_EMAIL:-}
+        BUSINESS_HOURS: ${BUSINESS_HOURS:-}
+        ENAMAD_ID: ${ENAMAD_ID:-}
+        ENAMAD_CODE: ${ENAMAD_CODE:-}
+        SAMANDEHI_ID: ${SAMANDEHI_ID:-}
+        SAMANDEHI_P: ${SAMANDEHI_P:-}
+        ZARINPAL_TRUST: ${ZARINPAL_TRUST:-}
+    restart: unless-stopped
+    # the same values at runtime, because pages are regenerated every 5 minutes
+    environment:
+      <<: *site-env
+      CATALOG_API_URL: http://web-api:8090/api/public/catalog
+    # writable: Next.js stores regenerated pages under /app/.next (runs as an unprivileged user)
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    init: true
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:3100/robots.txt"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    ports:
+      - "127.0.0.1:3100:3100"
+    logging: *default-logging
+
   ingress:
     image: nginx:stable-alpine
     restart: unless-stopped

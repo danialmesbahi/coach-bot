@@ -3,7 +3,7 @@ import json
 import re
 from urllib.parse import urlsplit
 
-FIELDS = ('name','phone','age','gender','height','weight','allergy','restriction','supplements','goal','training_history','notes','body_photo')
+FIELDS = ('name','phone','age','gender','height','weight','measurements','allergy','restriction','supplements','goal','training_history','notes','body_photo')
 
 
 def object_value(value):
@@ -44,6 +44,8 @@ def validate_product(body):
     if not isinstance(fields,list) or len(fields)>len(FIELDS) or any(field not in FIELDS for field in fields):
         raise ValueError('form_fields')
     result['form_fields']=[field for field in FIELDS if field in fields]
+    if 'body_photo' in fields and 'gender' not in fields:
+        result['form_fields'].insert(0, 'gender')
     questions=body.get('questions',[])
     if not isinstance(questions,list) or len(questions)>10 or any(not isinstance(q,str) or not 1<=len(q.strip())<=200 for q in questions):
         raise ValueError('questions')

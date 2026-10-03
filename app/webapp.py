@@ -115,7 +115,7 @@ async def security_headers(request: web.Request, handler):
 
 @web.middleware
 async def auth(request: web.Request, handler):
-    public = request.path in {"/", "/health", "/manifest.webmanifest", "/service-worker.js", "/api/config", "/api/auth/password"} or request.path.startswith(("/assets/", "/content/"))
+    public = request.path in {"/", "/health", "/manifest.webmanifest", "/service-worker.js", "/api/config", "/api/auth/password", "/api/public/catalog"} or request.path.startswith(("/assets/", "/content/"))
     if public:
         return await handler(request)
     actor = await _session_actor(request)
@@ -196,6 +196,7 @@ def management_record_visible(role: str, rows: dict | list[dict] | None) -> bool
 
 def _web_user(user: dict) -> dict:
     result = dict(user)
+    result['measurements']=repo._json_object(result.get('measurements'))
     photos = normalize_photos(result.pop("body_photo_file_ids", []))
     if not photos and result.get("body_photo_file_id"):
         photos = normalize_photos([result["body_photo_file_id"]])
@@ -230,6 +231,9 @@ def _web_message(message: dict) -> dict:
 
 
 async def _telegram_media(request: web.Request, file_id: str, fallback_type: str = "application/octet-stream", file_name: str | None = None):
+    from app.client_records_api import archived_response
+    archived=await archived_response(request,file_id)
+    if archived is not None: return archived
     cache_key = hashlib.sha256(file_id.encode()).hexdigest()
     cached = request.app["media_cache"].get(cache_key)
     if cached and cached[0] > time.monotonic():
@@ -722,7 +726,7 @@ async def order_detail(request: web.Request):
     result = _web_order(row)
     if staff.can(request['actor'], 'orders.read'):
         async with db.acquire() as c:
-            last_request = await c.fetchval("SELECT metadata->>'message' FROM audit_logs WHERE target_type='order' AND target_id=$1 AND action='web_needs_info' ORDER BY created_at DESC,id DESC LIMIT 1", row["id"])
+            last_request = await c.fetchval('SELECT body FROM order_info_requests WHERE order_id=$1 ORDER BY id DESC LIMIT 1',row['id'])
             manual_delivery=await c.fetchrow('SELECT status,error FROM manual_deliveries WHERE order_id=$1',row['id'])
         result["info_request"] = last_request
         result['manual_delivery']=dict(manual_delivery) if manual_delivery else None
@@ -736,6 +740,8 @@ async def order_action(request: web.Request):
     if not isinstance(body, dict):
         return response({"error": "invalid_payload"}, 400)
     action = body.get("action")
+    if action in {'approve_receipt', 'reject_receipt'}:
+        return response({'error':'payment_method_retired'},409)
     if action == 'retry_manual_delivery':
         staff.require(request['actor'],'orders.deliver')
         if await _rate_limited(request,'retry_delivery',3): return response({'error':'rate_limited'},429)
@@ -757,47 +763,41 @@ async def order_action(request: web.Request):
             await staff.audit(c,request['actor'],'delivery_retry_requested','order',order_id)
         request.app['read_cache'].clear()
         return response({'ok':True})
-    if action not in ("approve_receipt", "reject_receipt", "in_progress", "needs_info"):
+    if action not in ("in_progress", "needs_info"):
         return response({"error": "invalid_action"}, 400)
-    staff.require(request['actor'], 'payments.review' if action in {'approve_receipt', 'reject_receipt'} else 'orders.review')
+    staff.require(request['actor'], 'orders.review')
     info = body.get("message", "")
     if action == "needs_info" and (not isinstance(info, str) or not info.strip() or len(info.strip()) > 1000):
         return response({"error": "message_required"}, 400)
     actor = request["actor"]
-    actor_telegram_id = actor["telegram_id"]
     current = await repo.get_order(order_id)
     if not current:
         raise web.HTTPNotFound()
     if action in {'in_progress','needs_info'} and repo._json_object(current.get('product_snapshot')).get('delivery_mode','manual')!='manual':
         return response({'error':'automatic_delivery'},409)
-    changed = None
-    if action == "approve_receipt":
-        if current.get("payment_method") != "card_to_card":
-            return response({"error": "gateway_payment_is_automatic"}, 409)
-        changed = await repo.approve_card_payment(order_id, actor_telegram_id)
-        message = "✅ پرداخت شما تأیید شد. اطلاعات دوره شما در صف بررسی مربی قرار گرفت."
-    elif action == "reject_receipt":
-        if current.get("payment_method") != "card_to_card":
-            return response({"error": "gateway_payment_is_automatic"}, 409)
-        changed = await repo.reject_card_payment(order_id, actor_telegram_id)
-        message = "❌ رسید پرداخت تأیید نشد. لطفاً رسید درست را دوباره در ربات ارسال کنید."
-    elif action in {"in_progress", "needs_info"}:
-        changed = await repo.update_order_status(order_id, action)
-        message = (f"اطلاعات تکمیلی سفارش ORD-{order_id:06d}\n\n{info.strip()}\n\nپاسخ و عکس‌های درخواستی را از بخش «پیام به مربی» ارسال کنید و در پایان دکمه ارسال پیام را بزنید." if action == "needs_info" else "🏋️ اطلاعات دوره تأیید شد و طراحی برنامه شما آغاز شد.")
+    request_id=None
+    if action == 'needs_info':
+        from app.services.client_records import request_information
+        request_id=await request_information(actor,order_id,info.strip())
+        changed=request_id
+        message=f"اطلاعات تکمیلی سفارش ORD-{order_id:06d}\n\n{info.strip()}\n\nبا دکمه زیر پاسخ را برای بررسی همین سفارش ثبت کن."
     else:
-        return response({"error": "invalid_action"}, 400)
+        changed = await repo.update_order_status(order_id, action)
+        message="🏋️ اطلاعات دوره تأیید شد و طراحی برنامه شما آغاز شد."
     if not changed:
         return response({"error": "invalid_transition"}, 409)
-    await repo.add_audit(actor, f"web_{action}", "order", order_id, {"message": info.strip()} if action == "needs_info" else {})
+    if not request_id:
+        await repo.add_audit(actor, f"web_{action}", "order", order_id, {})
     request.app["read_cache"].clear()
-    if action == 'approve_receipt':
-        return response({'ok':True,'notification_queued':True})
     notified = False
     try:
-        sent = await request.app["bot"].send_message(current["telegram_id"], message)
+        from aiogram.utils.keyboard import InlineKeyboardBuilder
+        markup=InlineKeyboardBuilder().button(text='تکمیل اطلاعات این سفارش',callback_data=f'info:{request_id}').as_markup() if request_id else None
+        await request.app["bot"].send_message(current["telegram_id"], message,reply_markup=markup)
         notified = True
-        if action == "needs_info":
-            await repo.add_support_message(current["telegram_id"], sent.message_id, direction="sensi", sender_telegram_id=actor, content_text=message)
+        if request_id:
+            async with db.acquire() as c:
+                await c.execute('UPDATE order_info_requests SET notification_sent=true WHERE id=$1',request_id)
     except Exception:
         LOG.exception("Order %s updated but its Telegram notification failed", order_id)
     return response({"ok": True, "notification_sent": notified})
@@ -950,6 +950,9 @@ async def _send_reply(request: web.Request):
     if not user:
         raise web.HTTPNotFound()
     text, filename, payload = "", "", b""
+    remote_attachment = None
+    remote_kind = 'document'
+    record_file = None
     if request.content_type.startswith("multipart/"):
         reader, seen = await request.multipart(), set()
         while part := await reader.next():
@@ -966,16 +969,40 @@ async def _send_reply(request: web.Request):
         if not isinstance(body, dict) or not isinstance(body.get("message", ""), str):
             return response({"error": "invalid_message"}, 400)
         text = body.get("message", "").strip()
-    inspected = _inspect_upload(filename, payload) if payload else None
-    if payload and len(text) > 1024:
+        if 'record_file_id' in body:
+            if type(body['record_file_id']) is not int or body['record_file_id']<=0:
+                return response({'error':'invalid_file'},400)
+            async with db.acquire() as c:
+                record_file=await c.fetchrow('SELECT * FROM client_files WHERE id=$1 AND user_id=$2',body['record_file_id'],user_id)
+            if not record_file: raise web.HTTPNotFound()
+            filename=record_file['filename']
+            if record_file['file_id']:
+                remote_attachment=record_file['file_id']
+                # Telegram file IDs are bound to their original media method.
+                async with db.acquire() as c:
+                    from app.services.client_records import telegram_media_kind
+                    remote_kind=await telegram_media_kind(c,record_file)
+                if remote_kind=='photo': remote_kind='image'
+            elif record_file['storage_key']:
+                def read_attachment():
+                    with asset_path(record_file['storage_key']).open('rb') as stream:
+                        return stream.read(settings.max_plan_file_mb*1024*1024+1)
+                try: payload=await asyncio.to_thread(read_attachment)
+                except OSError: return response({'error':'file_unavailable'},400)
+                if len(payload)>settings.max_plan_file_mb*1024*1024:
+                    return response({'error':'file_too_large'},400)
+            else:
+                return response({'error':'file_unavailable'},400)
+    inspected = _inspect_upload(filename, payload) if payload else ((record_file['mime_type'] or 'application/octet-stream',remote_kind) if remote_attachment else None)
+    if (payload or remote_attachment) and len(text) > 1024:
         return response({"error": "caption_too_long"}, 400)
-    if len(text) > 4000 or (not text and not payload) or (payload and not inspected):
+    if len(text) > 4000 or (not text and not payload and not remote_attachment) or (payload and not inspected):
         return response({"error": "invalid_message"}, 400)
     bot = request.app["bot"]
     await bot.send_message(user["telegram_id"], "📩 پیام جدید از طرف سنسی")
     content_type, file_id = "text", None
-    if payload:
-        upload = BufferedInputFile(payload, filename=filename)
+    if payload or remote_attachment:
+        upload = remote_attachment or BufferedInputFile(payload, filename=filename)
         mime_type, media_kind = inspected
         if media_kind == "image":
             sent = await bot.send_photo(user["telegram_id"], upload, caption=text or None)
@@ -995,7 +1022,7 @@ async def _send_reply(request: web.Request):
     await repo.add_support_message(
         user["telegram_id"], sent.message_id, direction="sensi", sender_telegram_id=request["actor"], content_type=content_type,
         content_text=text or None, file_id=file_id, file_name=filename or None,
-        mime_type=inspected[0] if inspected else None, file_size=len(payload) if payload else None,
+        mime_type=inspected[0] if inspected else None, file_size=len(payload) if payload else record_file['byte_size'] if record_file else None,
     )
     return response({"ok": True})
 
@@ -1103,7 +1130,7 @@ async def customer_body_photo(request: web.Request):
         photos = normalize_photos([user["body_photo_file_id"]])
     if index >= len(photos):
         raise web.HTTPNotFound()
-    return await _telegram_media(request, photos[index]["file_id"], "image/jpeg")
+    return await _record_photo_media(request,photos[index],user_id)
 
 
 async def order_body_photo(request: web.Request):
@@ -1117,7 +1144,19 @@ async def order_body_photo(request: web.Request):
         photos = normalize_photos([snapshot["body_photo_file_id"]])
     if index >= len(photos):
         raise web.HTTPNotFound()
-    return await _telegram_media(request, photos[index]["file_id"], "image/jpeg")
+    return await _record_photo_media(request,photos[index],order['user_id'])
+
+
+async def _record_photo_media(request,photo,user_id):
+    if photo.get('client_file_id'):
+        async with db.acquire() as c:
+            row=await c.fetchrow('SELECT * FROM client_files WHERE id=$1 AND user_id=$2',photo['client_file_id'],user_id)
+        if not row: raise web.HTTPNotFound()
+        from app.client_records_api import stored_response
+        result=await stored_response(request,row)
+        if result is not None: return result
+    if not photo.get('file_id'): raise web.HTTPNotFound()
+    return await _telegram_media(request,photo['file_id'],'image/jpeg')
 
 
 async def order_receipt(request: web.Request):
@@ -1152,6 +1191,7 @@ async def sales(request: web.Request):
 
 
 async def build_app():
+    from app.client_records_api import routes as client_record_routes
     from app.catalog_api import routes as catalog_routes
     from app.broadcast_api import routes as broadcast_routes
     from app.analytics_api import analytics, client_error
@@ -1172,6 +1212,7 @@ async def build_app():
     app.router.add_post('/content/{token:[A-Za-z0-9_-]{43}}',purchased_content)
     app["channel_slots"] = asyncio.Semaphore(2)
     app.add_routes(catalog_routes())
+    app.add_routes(client_record_routes())
     app.add_routes(broadcast_routes())
     app.router.add_get('/api/analytics', analytics)
     app.router.add_post('/api/analytics/client-error',client_error)

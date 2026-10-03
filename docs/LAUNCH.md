@@ -83,3 +83,24 @@ Sign in, change the temporary admin password and remove its private JSON file. A
 ## 5. Recovery and capacity
 
 Keep weekly VPS snapshots and daily PostgreSQL **and catalog-file** backups outside the VPS. Test restoring both. The 30 GB root disk is suitable for initial testing, not an unlimited video library: monitor free space and add storage before accepting large uploads. Build on 4 GB RAM may require temporary swap. The first launch is not evidence of capacity for tens of thousands of simultaneous users; load-test the deployed service before promising that scale.
+
+## 6. Landing page on the main domain
+
+Layout: `sensibot.ir` serves the public site (`site` container, `127.0.0.1:3100`); `www.sensibot.ir` redirects to it; `panel.sensibot.ir` serves the staff panel through the inner ingress (`127.0.0.1:8090`). The main domain also forwards `/telegram/webhook`, `/payment/zarinpal/callback`, `/content/` and `/health` to the ingress, so `PUBLIC_BASE_URL=https://sensibot.ir` keeps the bot, payments and download links working.
+
+1. DNS (ArvanCloud, CDN proxy off): `A` records `@`, `www` and `panel` → the VPS IPv4.
+2. In the server's `.env` (read by Compose for the `site` build and runtime), set the public identity that must match the eNamad registration: `SITE_URL=https://sensibot.ir`, `BOT_USERNAME`, `BUSINESS_LEGAL_NAME`, `BUSINESS_ADDRESS`, `BUSINESS_POSTAL_CODE`, `BUSINESS_PHONE`, `BUSINESS_EMAIL`, `BUSINESS_HOURS`, and later `ENAMAD_ID`, `ENAMAD_CODE`, `SAMANDEHI_ID`, `SAMANDEHI_P`, `ZARINPAL_TRUST=true`. Empty values fall back to `site/sensi.config.ts`.
+3. HTTP first, then the certificate, then HTTPS:
+
+```sh
+sudo cp deploy/nginx-sensibot-http.conf /etc/nginx/sites-available/sensibot-http
+sudo ln -sf /etc/nginx/sites-available/sensibot-http /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+sudo certbot certonly --webroot -w /var/www/html -d sensibot.ir -d www.sensibot.ir -d panel.sensibot.ir
+sudo cp deploy/nginx-sensibot-https.conf /etc/nginx/sites-available/sensibot-https
+sudo ln -sf /etc/nginx/sites-available/sensibot-https /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+4. Start the site: `sudo docker compose up -d --build site`, then check `curl -fsS http://127.0.0.1:3100/robots.txt` and `https://sensibot.ir`.
+5. Move the bot: set `PUBLIC_BASE_URL=https://sensibot.ir` in `.env.live` and run `sudo docker compose up -d bot web-api` (the bot re-registers its webhook on start). Register `https://sensibot.ir` as the website in the ZarinPal merchant panel.

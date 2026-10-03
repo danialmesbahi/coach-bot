@@ -22,11 +22,9 @@ class Settings(BaseSettings):
     timezone: str = 'Asia/Tehran'
     log_level: str = 'INFO'
     app_env: str = 'development'
-    payment_mode: str = 'both'
+    payment_mode: str = 'zarinpal'
     zarinpal_merchant_id: str = ''
     zarinpal_callback_url: str = ''
-    card_to_card_title: str = 'پرداخت کارت به کارت'
-    card_to_card_bank_info: str = 'شماره کارت را در اینجا قرار دهید'
     public_base_url: str = ''
     webhook_secret: str = ''
     max_plan_file_mb: int = Field(default=10, ge=1, le=50)
@@ -84,8 +82,8 @@ class Settings(BaseSettings):
         except ValueError as exc:
             raise RuntimeError('ADMIN_TEAM_IDS must contain only numeric Telegram IDs') from exc
         mode = self.payment_mode.lower()
-        if mode not in {'mock', 'card_to_card', 'zarinpal', 'both'}:
-            raise RuntimeError('PAYMENT_MODE must be mock, card_to_card, zarinpal, or both')
+        if mode not in {'mock', 'zarinpal', 'both'}:
+            raise RuntimeError('PAYMENT_MODE must be zarinpal (mock is development-only)')
         if self.app_env.lower() == 'production':
             if self.web_dev_login:
                 raise RuntimeError('WEB_DEV_LOGIN is forbidden in production')
@@ -101,8 +99,6 @@ class Settings(BaseSettings):
                 callback = urlsplit(self.resolved_zarinpal_callback)
                 if callback.scheme != 'https' or not callback.hostname or callback.username or callback.fragment:
                     raise RuntimeError('ZARINPAL_CALLBACK_URL must be a valid HTTPS callback URL')
-            if mode in {'card_to_card', 'both'} and self.card_to_card_bank_info == 'شماره کارت را در اینجا قرار دهید':
-                raise RuntimeError('CARD_TO_CARD_BANK_INFO must be configured for production')
 
 
 @lru_cache

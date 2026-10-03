@@ -16,6 +16,7 @@ from app.services.content import asset_path, content_link
 from app.services.deliveries import process_manual_deliveries
 from app.services.broadcasts import process_broadcasts
 from app.utils.media import message_file
+from app.keyboards import customer_main_reply_kb
 
 log=logging.getLogger(__name__)
 router=Router(name='paid_channels')
@@ -79,7 +80,7 @@ async def fulfill_order(bot,order_id):
                 JOIN product_assets a ON a.id=d.asset_id WHERE d.order_id=$1 AND d.file_id IS NOT NULL
                 ORDER BY d.delivered_at LIMIT 1''',order_id)
             if first: file_id,filename=first['file_id'],first['filename']
-        await send_message_once(bot,row,'payment',text)
+        await send_message_once(bot,row,'payment',text,reply_markup=customer_main_reply_kb(True))
         await c.execute('''UPDATE orders SET fulfillment_done=true,fulfillment_error=NULL,
             status=CASE WHEN $2='manual' THEN status ELSE 'delivered' END,
             delivered_at=CASE WHEN $2='manual' THEN delivered_at ELSE COALESCE(delivered_at,NOW()) END,

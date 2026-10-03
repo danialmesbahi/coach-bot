@@ -150,7 +150,8 @@ async def main():
     except Exception:
         logging.getLogger(__name__).warning('Could not refresh Telegram command menu',exc_info=True)
     dp=await build_dispatcher(redis)
-    background_tasks=asyncio.gather(run_fulfillment_loop(bot),run_telemetry_loop('bot'))
+    from app.services.client_archive import run_client_archive_loop
+    background_tasks=asyncio.gather(run_fulfillment_loop(bot),run_telemetry_loop('bot'),run_client_archive_loop(bot))
     if settings.app_env.lower() == 'production':
         await run_webhook(dp,redis,background_tasks)
     else:

@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import secrets
+import time
 
 from aiohttp import web
 from app.db.core import db
@@ -191,8 +192,27 @@ async def catalog_channel(request):
     return response({'ok':True,'title':chat.title})
 
 
+_public_cache={'at':0.0,'body':None}
+
+
+async def public_catalog(request):
+    """Public storefront for the website: only what a buyer already sees in Telegram, never delivery content."""
+    from app.webapp import response
+    now=time.monotonic()
+    if _public_cache['body'] is None or now-_public_cache['at']>60:
+        async with db.acquire() as c:
+            rows=await c.fetch('''SELECT id,title,description,price_irr,duration_days,duration_unit,delivery_mode,form_fields
+                FROM products WHERE active AND NOT archived ORDER BY sort_order,id LIMIT 50''')
+            gate=await c.fetchval('SELECT is_open FROM sales_gate WHERE id=1')
+        items=[{'id':r['id'],'title':r['title'],'description':r['description'] or '','price_toman':r['price_irr'],
+                'duration_days':r['duration_days'],'duration_unit':r['duration_unit'],'delivery_mode':r['delivery_mode'],
+                'form_fields':object_value(r['form_fields']) or []} for r in rows]
+        _public_cache.update(at=now,body={'items':items,'sales_open':True if gate is None else bool(gate)})
+    return response(_public_cache['body'])
+
+
 def routes():
-    return [web.get('/api/catalog',catalog),web.post('/api/catalog',catalog_save),
+    return [web.get('/api/public/catalog',public_catalog),web.get('/api/catalog',catalog),web.post('/api/catalog',catalog_save),
             web.post('/api/catalog/{product_id:\\d+}',catalog_save),web.post('/api/catalog/{product_id:\\d+}/archive',catalog_archive),
             web.post('/api/catalog-assets',catalog_asset),web.get('/api/catalog-assets/{asset_id:\\d+}/preview',catalog_asset_preview),
             web.post('/api/catalog-channels',catalog_channel),

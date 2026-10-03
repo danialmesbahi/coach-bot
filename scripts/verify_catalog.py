@@ -6,10 +6,11 @@ import asyncio
 import json
 import os
 import subprocess
+import sys
 import uuid
 from types import SimpleNamespace
 from urllib.parse import urlsplit, urlunsplit
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import asyncpg
 
@@ -23,7 +24,7 @@ async def main():
     os.environ['DATABASE_URL']=urlunsplit((parts.scheme,parts.netloc,'/'+name,parts.query,parts.fragment))
     os.environ['PUBLIC_BASE_URL']='https://downloads.example.test'
     try:
-        subprocess.run(['alembic','upgrade','head'],check=True)
+        subprocess.run([sys.executable,'-m','alembic','upgrade','head'],check=True)
         from app.db.core import db
         from app.db import repositories as repo
         from app.services import staff, fulfillment
@@ -95,9 +96,8 @@ async def main():
             bot.ban_chat_member.assert_awaited_once_with(channel_id,tg.id)
             assert await fulfillment.channel_link(bot,oid,77) is None
             # Renewal is a new purchase at the current terms.
-            new=await repo.create_order(tg.id,await repo.get_product(pid),{},'card_to_card',oid)
-            await repo.submit_receipt(new['id'],'fake-receipt','photo')
-            assert await repo.approve_card_payment(new['id'],actor)
+            new=await repo.create_order(tg.id,await repo.get_product(pid),{},'zarinpal',oid)
+            assert await repo.mark_zarinpal_paid(new['id'],'test-renewal-ref')
             bot.create_chat_invite_link.return_value=SimpleNamespace(invite_link='https://t.me/+fake-test-2')
             await fulfillment.fulfill_order(bot,new['id'])
             assert (await repo.get_user_order(new['id'],tg.id))['days_remaining']==30
@@ -214,7 +214,8 @@ async def main():
             app['redis']=SimpleNamespace(incr=AsyncMock(return_value=1),expire=AsyncMock())
             app.add_routes(catalog_api.routes())
             app.router.add_post('/api/orders/{order_id}/action',webapp.order_action)
-            with TemporaryDirectory() as storage:
+            # The fixture writes < 20 MB; emulate a roomy test volume without changing the production reserve.
+            with TemporaryDirectory() as storage, patch('app.services.content.shutil.disk_usage',return_value=SimpleNamespace(total=100*1024**3,free=90*1024**3)):
                 os.environ['CATALOG_STORAGE']=storage
                 catalog_api.get_settings().public_base_url=''
                 async with TestClient(TestServer(app)) as client:

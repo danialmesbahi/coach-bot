@@ -15,13 +15,13 @@ def rtl_pager(previous_data: str | None = None, next_data: str | None = None):
     return buttons
 
 
-def _persistent(rows):
+def _persistent(rows, placeholder='انتخاب کن یا پاسخ خودت را بنویس…'):
     return ReplyKeyboardMarkup(
         keyboard=rows,
         resize_keyboard=True,
         one_time_keyboard=False,
         is_persistent=True,
-        input_field_placeholder='انتخاب کن…',
+        input_field_placeholder=placeholder,
     )
 
 
@@ -51,11 +51,11 @@ def customer_nav_rows(include_home=True):
     return [[KeyboardButton(text=MAIN)]] if include_home else []
 
 
-def back_reply_kb(*extra: str, include_main: bool = True):
+def back_reply_kb(*extra: str, include_main: bool = True, placeholder='پاسخت را بنویس…'):
     rows = [[KeyboardButton(text=x)] for x in extra]
     if include_main:
         rows.append([KeyboardButton(text=MAIN)])
-    return _persistent(rows)
+    return _persistent(rows,placeholder)
 
 
 def phone_kb():
@@ -87,7 +87,7 @@ def previous_value_kb(label: str, value):
     ])
 
 
-def body_photo_kb(photo_count: int=0, collecting: bool=True, can_restore: bool=False, back_text: str | None=None):
+def body_photo_kb(photo_count: int=0, collecting: bool=True, can_restore: bool=False, back_text: str | None=None, *, optional: bool=False):
     rows=[]
     if collecting:
         rows.append([KeyboardButton(text='👁 دیدن عکس‌های فعلی',style='primary')])
@@ -104,6 +104,8 @@ def body_photo_kb(photo_count: int=0, collecting: bool=True, can_restore: bool=F
         rows.append([KeyboardButton(text='✅ اتمام و ادامه',style='success')])
     if can_restore:
         rows.append([KeyboardButton(text=back_text or '↩️ بازگشت به عکس‌های قبلی',style='primary')])
+    if optional and not photo_count:
+        rows.insert(0,[KeyboardButton(text='⏭️ ادامه بدون عکس')])
     return _persistent(rows)
 
 
@@ -140,8 +142,6 @@ def edit_photo_kb(photo_count: int=0, collecting: bool=True, can_restore: bool=F
 
 def payment_methods_kb(mode: str):
     rows=[]
-    if mode in {'card_to_card', 'both'}:
-        rows.append([InlineKeyboardButton(text='💳 کارت‌به‌کارت', callback_data='pay:card', style='primary')])
     if mode in {'zarinpal', 'both'}:
         rows.append([InlineKeyboardButton(text='🔒 پرداخت امن زرین‌پال', callback_data='pay:zarinpal', style='primary')])
     if mode == 'mock':
@@ -233,10 +233,8 @@ def profile_history_page_kb(page: int=1, total_pages: int=1, include_back: bool=
 
 def customer_compose_kb():
     return _persistent([
-        [KeyboardButton(text='✅ ارسال پیام', style='success')],
-        [KeyboardButton(text='🗑 پاک کردن پیش‌نویس')],
-        [KeyboardButton(text='❌ لغو ارسال پیام', style='danger')],
-    ])
+        [KeyboardButton(text='پایان گفتگو و بازگشت')],
+    ],'پیامت را بنویس یا فایل بفرست…')
 
 
 def sensi_compose_kb():
@@ -257,7 +255,6 @@ def pending_order_kb(order_id: int):
 
 def rejected_receipt_kb(order_id: int):
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text='🔁 ارسال رسید جدید', callback_data=f'order:receipt:{order_id}', style='primary')],
         [InlineKeyboardButton(text=BACK, callback_data='orders')],
     ])
 

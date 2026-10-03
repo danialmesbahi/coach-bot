@@ -48,7 +48,7 @@ def test_web_console_has_responsive_theme_and_role_service():
 def test_production_rejects_dev_login(monkeypatch):
     from app.config import Settings
     values = get_settings().model_dump()
-    values.update(app_env="production", web_dev_login=True, webhook_secret="x" * 32, public_base_url="https://example.com", payment_mode="card_to_card", card_to_card_bank_info="configured")
+    values.update(app_env="production", web_dev_login=True, webhook_secret="x" * 32, public_base_url="https://example.com", payment_mode="zarinpal", zarinpal_merchant_id="configured")
     settings = Settings(**values)
     try:
         settings.validate_runtime()

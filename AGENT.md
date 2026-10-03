@@ -2,6 +2,8 @@
 
 > Fast context: read `PROJECT_MAP.md` first, then open only the route-specific files it names. This document remains the authoritative product and safety contract.
 
+Current client workflow: `docs/CLIENT_WORKFLOW_PLAN.md` records the 2026-10-03 implementation and verification. Gateway-only payments, independent per-order measurements/photos, explicit record-edit destinations and durable order information requests supersede older behavior.
+
 ## Project purpose
 
 This is a production-oriented Telegram bot for **one Sensi / coach only**. The bot sells three products:
@@ -28,7 +30,7 @@ The single coach associated with this bot.
 
 The Sensi can:
 - view actionable orders
-- approve/reject card-to-card payment receipts
+- review client information after server-verified gateway payments
 - manage order status
 - request more information
 - send plans to customers
@@ -77,6 +79,7 @@ The customer should not repeatedly enter static information.
 - current age
 - current height
 - current weight
+- current body measurements in cm (abdomen, waist, arm, thigh, shoulder width, chest)
 - goal
 - training experience
 - food allergy
@@ -97,11 +100,12 @@ For every new purchase, ask again for changeable/current information when approp
 - age
 - height
 - weight
+- body measurements when required by the product
 - new body photos
 
 Reuse other profile information such as goal, training history, allergy, restriction, supplements, notes unless missing or clearly required for the selected product.
 
-Every new completed questionnaire/order creates a snapshot. As requested, explicit profile/body-photo edits update the latest enrolled order. Earlier orders must keep their own historical data.
+Every completed questionnaire/order creates an independent snapshot. Profile edits update the current profile only. Authorized staff can explicitly edit a particular order; its previous version is preserved in `record_revisions`. Never silently rewrite a past order from a profile edit.
 
 ## Customer purchase forms
 
@@ -138,11 +142,13 @@ Collect the union of the necessary nutrition + training fields without duplicati
 
 Customers can submit **up to 6 body photos per order**.
 
+For body-assessment products, each purchase/renewal starts with no photos. Men must submit four directions (front, back, right, left); women can explicitly continue without photos. The bot requests fresh submissions but cannot prove capture age. Measurements refresh for each purchase; historical photos and measurements remain attached to their original order. Ready-made/channel products without assessment fields are exempt.
+
 The bot should support photo messages and photo-like Telegram documents where the implementation allows it.
 
 Admins should be able to see:
 - all customer body photos associated with the buyer/orders
-- card-to-card receipt image separately
+- historical receipt images separately, with their dedicated permission
 
 Do not confuse body photos with payment receipt photos.
 
@@ -195,7 +201,9 @@ Same concept:
 
 Typical lifecycle:
 
-`awaiting_payment -> paid/pending_review -> approved -> designing -> ready -> delivered`
+`awaiting_payment -> paid -> in_progress -> ready -> delivered`
+
+Information recovery: `paid/in_progress -> needs_info -> paid (new response awaiting review) -> in_progress`. Telegram replies use an owned durable request, not general chat. Starting design while `needs_info` is forbidden. Submitting a response resets the assigned followup's seen state.
 
 Additional states can exist such as:
 - rejected
@@ -222,26 +230,9 @@ Do not delete successful payment/financial records just to hide them from UI.
 
 ## Payments
 
-Two payment methods are supported/planned:
+Production purchases use ZarinPal only. Card-to-card creation, receipt submission and manual approval/rejection are retired, including legacy callbacks. Never convert an existing unverified transfer to paid or erase its history. Historical receipts are view-only with `payments.review`.
 
-### Card-to-card
-Customer sends a payment receipt image.
-
-Immediately after receiving the receipt, customer must receive:
-
-`🙏 با تشکر از خرید شما. به‌زودی وضعیت سفارش شما مشخص خواهد شد.`
-
-Receipt must be stored and forwarded to the Sensi.
-
-Sensi can:
-- approve
-- reject
-- request more information if implemented
-
-Approval message to customer should clearly say payment was approved and order is being designed.
-
-Rejection message to customer must include a clear path such as:
-- 💬 پیام به مربی
+Development mock payment is allowed only through the explicit development setting; production never falls back to mock or card transfer.
 
 ### ZarinPal
 Use proper request -> redirect -> callback -> verify flow.
@@ -270,6 +261,8 @@ There is a two-way messaging feature between Sensi and customers.
 
 ### Customer -> Sensi
 Customer sends a message; Sensi can see it and reply.
+
+A verified non-cancelled purchase unlocks chat immediately, including custom catalog products and old locked keyboards. Customer live chat saves each valid text/media message without a second send button or automatic exit. Historical unsent drafts require an explicit send/cancel decision; never send them automatically. Additional-information replies remain on their owned order, not this chat.
 
 ### Sensi -> Customer
 Before the actual message content, customer must receive:

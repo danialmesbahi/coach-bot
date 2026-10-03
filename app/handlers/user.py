@@ -8,19 +8,21 @@ from aiogram import Router, F
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart, CommandObject
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
+from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove, CopyTextButton, InlineKeyboardButton, InlineKeyboardMarkup, FSInputFile
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.utils.media_group import MediaGroupBuilder
 from app.keyboards import main_reply_kb, customer_main_reply_kb, products_kb, phone_kb, choice_reply_kb, skip_reply_kb, back_reply_kb, back_kb, confirm_kb, payment_methods_kb, pending_order_kb, rejected_receipt_kb, cancel_confirm_kb, profile_kb, profile_history_kb, profile_history_page_kb, customer_compose_kb, orders_list_kb, purchase_entry_kb, renewal_list_kb, renewal_order_kb, plan_download_kb, previous_value_kb, body_photo_kb, support_contact_kb
-from app.states.forms import PurchaseForm, SupportForm, CancelOrder
+from app.states.forms import PurchaseForm, SupportForm, CancelOrder, CustomerInfoForm
 from app.db import repositories as repo
 from app.services.payment import payment
 from app.services.telemetry import record
+from app.services import client_records
 from app.config import get_settings
 from app.utils.text import money, status_fa, order_status_fa, split_message, progress_path, subscription_time_fa, order_code, jalali_dt
 from app.utils.validation import clean_text, parse_number, parse_int
 from app.utils.photos import MAX_BODY_PHOTOS, append_photo, delete_draft_photos, delete_photo_message, edit_photo_status, normalize_photos, photo_lock, stored_photos
 from app.utils.media import BoundedBuffer, _inspect_upload
+from app.utils.measurements import MEASUREMENTS, parse_measurements, validate_measurements, measurements_text, required_body_photos
 
 router=Router(); log=logging.getLogger(__name__)
 
@@ -245,8 +247,9 @@ async def nav_support(m,state):
     await start_support(m,state)
 
 @router.message(F.text=='🔒 پیام به مربی')
-async def locked_support(m):
-    await m.answer('🔒 پیام به مربی فقط بعد از خرید حداقل یک دوره فعال می‌شود. از «🛒 خرید دوره» شروع کن.')
+async def locked_support(m, state):
+    # A reply keyboard can outlive the payment that originally rendered it.
+    await start_support(m, state)
 
 @router.message(F.text=='🏋️ دوره‌های فعال')
 async def nav_active_courses(m,state):
@@ -300,11 +303,16 @@ PURCHASE_STEPS={
  'complete':['name','phone','age','gender','height','weight','allergy','restriction','supplements','goal','training_history','notes','body_photo']}
 KEYMAP={'name':'name','phone':'phone','age':'age','gender':'gender','height':'height_cm','weight':'weight_kg','allergy':'allergy','restriction':'restriction','supplements':'supplements','goal':'goal','training_history':'training_history','notes':'notes','body_photo':'body_photo_file_ids'}
 PROFILE_KEYMAP={'allergy':'food_allergy','restriction':'food_restriction'}
+KEYMAP['measurements']='measurements'
+for _steps in PURCHASE_STEPS.values():
+    _steps.insert(_steps.index('weight')+1,'measurements')
 
 
 def purchase_route(code: str, data: dict, fields=None) -> list[str]:
-    refresh={'age','height','weight','notes','body_photo'}
-    return [step for step in (fields if fields is not None else PURCHASE_STEPS.get(code,[])) if step in refresh or not data.get(KEYMAP[step])]
+    refresh={'age','height','weight','measurements','notes','body_photo'}
+    from app.services.catalog import FIELDS
+    sequence=[step for step in FIELDS if step in fields] if fields is not None else PURCHASE_STEPS.get(code,[])
+    return [step for step in sequence if step in refresh or not data.get(KEYMAP[step])]
 
 
 def _step_title(data: dict, step: str) -> str:
@@ -321,13 +329,17 @@ async def prompt(state, msg, step):
       'height':('قدت رو به سانتی‌متر وارد کن.\nمثال: ۱۷۸',previous_value_kb('قد',d['height_cm']) if d.get('height_cm') is not None else back_reply_kb()),
       'weight':('وزن فعلی‌ات رو به کیلوگرم وارد کن.\nمثال: ۷۹.۵',previous_value_kb('وزن',d['weight_kg']) if d.get('weight_kg') is not None else back_reply_kb()),
       'allergy':('حساسیت غذایی داری؟\nاگر داری، همینجا توضیحش بده.',skip_reply_kb('⏭️ ندارم')),
-      'restriction':('محدودیت غذایی داری؟\nاگر داری، همینجا توضیحش بده.',skip_reply_kb('⏭️ ندارم')),
-      'supplements':('اگر مکمل مصرف می‌کنی، اسمش رو بنویس.',skip_reply_kb('⏭️ مصرف نمی‌کنم')),
-      'goal':('🎯 هدفت چیه؟\nمثلاً کاهش وزن، عضله‌سازی یا افزایش آمادگی',back_reply_kb()),
-      'training_history':('🏋️ از سابقهٔ تمرینت بگو؛ مدت، نوع تمرین و وقفه‌ها.',back_reply_kb()),
+      'restriction':('محدودیت غذایی داری؟\nیکی از گزینه‌ها را انتخاب کن یا محدودیت‌هایت را با جزئیات بنویس.',choice_reply_kb(['⏭️ ندارم','گیاه‌خوار هستم','وگان هستم'])),
+      'supplements':('اگر مکمل مصرف می‌کنی، اسمش رو بنویس؛ یا یکی از گزینه‌های زیر را بزن.',skip_reply_kb('⏭️ مصرف نمی‌کنم','مصرف می‌کنم')),
+      'goal':('🎯 هدفت چیه؟\nیک گزینه را انتخاب کن یا هدف دلخواهت را بنویس. اگر چند هدف داری، همه را در یک پیام بفرست.',choice_reply_kb(['کاهش وزن و چربی','عضله‌سازی','افزایش قدرت','آمادگی و تناسب اندام'])),
+      'training_history':('🏋️ سابقهٔ تمرینت چقدره؟\nیک گزینه را انتخاب کن یا مدت، نوع تمرین و وقفه‌ها را خودت بنویس.',choice_reply_kb(['تازه شروع می‌کنم','کمتر از ۶ ماه','۶ ماه تا ۲ سال','بیشتر از ۲ سال'])),
       'notes':('📝 نکتهٔ دیگه‌ای هست که مربی باید بدونه؟',skip_reply_kb('⏭️ بدون توضیحات')),
     }
     if step=='body_photo': return await ask_photo(msg,state)
+    if step=='measurements':
+        template='\n'.join(f'{label}: ' for label in MEASUREMENTS.values())
+        await msg.answer(_step_title(d,step)+'📏 اندازه‌های امروز، به سانتی‌متر\nمتر را بدون فشار نگه دار؛ کمر باریک‌ترین قسمت و شکم هم‌سطح ناف است. عرض شانه فاصله مستقیم دو سر شانه است، نه دور شانه.\nقالب زیر را کپی و در کادر پیام جای‌گذاری کن؛ جلوی هر دونقطه اندازه خودت را بنویس و هر شش خط را با هم بفرست.',reply_markup=back_reply_kb(placeholder='قالب را بچسبان و شش اندازه را تکمیل کن…'))
+        return await msg.answer('<code>'+escape(template)+'</code>',parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='📋 کپی قالب اندازه‌ها',copy_text=CopyTextButton(text=template))]]))
     text,markup=prompts[step]; await msg.answer(_step_title(d,step)+text,reply_markup=markup)
 
 @router.callback_query(F.data.startswith('buy:'))
@@ -383,8 +395,7 @@ async def begin_purchase(message: Message, state: FSMContext, pid: int, actor, r
             'height_cm': _fsm_value(user.get('height_cm')),
             'weight_kg': _fsm_value(user.get('weight_kg')),
         }
-        course_photos=await repo.latest_course_photos(uid)
-        previous_photos=normalize_photos(course_photos if course_photos is not None else user.get('body_photo_file_ids'))
+        previous_photos=[]  # Every purchase starts a new dated assessment.
         if profile['supplements'] == 'مصرف می‌کنم':
             profile['supplements'] = ''
         from app.services.catalog import object_value
@@ -563,6 +574,16 @@ async def notes(m,state):
     raw=(m.text or '').strip(); v='' if raw.startswith('⏭️') or raw=='ندارم' else clean_text(raw,1000)
     await state.update_data(notes=v); await repo.update_user(m.from_user.id,notes=v); await advance_after(state,m,'notes')
 
+
+@router.message(PurchaseForm.measurements)
+async def body_measurements(m,state):
+    try:
+        values=parse_measurements(m.text or '')
+    except ValueError as exc:
+        return await m.answer(str(exc))
+    await state.update_data(measurements=values)
+    await advance_after(state,m,'measurements')
+
 async def ask_photo(msg,state):
     d=await state.get_data(); count=len(d.get('body_photo_file_ids',[])); collecting=bool(d.get('photo_collecting'))
     replacing=bool(d.get('photo_replacing')); adding=bool(d.get('photo_adding'))
@@ -573,11 +594,11 @@ async def ask_photo(msg,state):
           ('عکس بعدی رو بفرست یا «✅ اتمام و ادامه» رو بزن.' if collecting and count else
            'عکس‌های قبلی آماده‌اند؛ می‌تونی همین‌ها رو نگه داری، بهشون اضافه کنی یا یک لیست تازه بسازی.' if count else
            'لیست جدید عکس‌ها را بفرست یا به عکس‌های قبلی برگرد.' if can_restore else
-           'تا ۶ عکس واضح از روبه‌رو، بغل یا پشت بفرست؛ بدون عکس هم می‌تونی ادامه بدی.'))
+           'عکس‌های تازه این دوره را به ترتیب روبه‌رو، پشت، نیم‌رخ راست و نیم‌رخ چپ بفرست؛ با نور کافی، فاصله یکسان و پوشش ورزشی مناسب. صورت لازم نیست دیده شود. این عکس‌ها برای ارزیابی مربی هستند، نه انتشار عمومی.\n'+('برای آقایان هر چهار عکس لازم است.' if required_body_photos(d) else 'برای خانم‌ها اختیاری است؛ ارسال عکس به ارزیابی دقیق‌تر کمک می‌کند.')))
     message_id=d.get('photo_prompt_message_id')
     if await edit_photo_status(msg.bot,msg.chat.id,message_id,text):
         return
-    sent=await msg.answer(text,reply_markup=body_photo_kb(count,collecting,can_restore,back_text))
+    sent=await msg.answer(text,reply_markup=body_photo_kb(count,collecting,can_restore,back_text,optional=not required_body_photos(d)))
     await state.update_data(photo_prompt_message_id=sent.message_id)
 
 
@@ -595,7 +616,9 @@ async def body_photo(m,state):
         photo=m.photo[-1]
         if photo.file_size and photo.file_size > get_settings().max_body_photo_mb * 1024 * 1024:
             return await m.answer(f'❌ حجم هر عکس باید کمتر از {get_settings().max_body_photo_mb}MB باشه.')
-        ids, accepted=append_photo(ids,_image_ref(photo.file_id,'photo',m.message_id))
+        item=_image_ref(photo.file_id,'photo',m.message_id)
+        item.update(direction=('front','back','right','left','extra','extra')[min(len(ids),5)],captured_at=m.date.isoformat())
+        ids, accepted=append_photo(ids,item)
         if not accepted:
             await delete_photo_message(m.bot,m.chat.id,m.message_id)
             group_id=str(m.media_group_id) if m.media_group_id else None
@@ -631,7 +654,7 @@ async def remove_purchase_photo(m: Message, state: FSMContext):
 
 
 @router.message(PurchaseForm.body_photo,F.text=='✅ ادامه با همین عکس‌ها')
-async def keep_previous_photos(m,state): await show_summary(m,state)
+async def keep_previous_photos(m,state): await finish_photos(m,state)
 
 
 @router.message(PurchaseForm.body_photo,F.text=='➕ افزودن عکس جدید')
@@ -687,13 +710,15 @@ async def restore_previous_purchase_photos(m: Message, state: FSMContext):
         )
         await ask_photo(m,state)
 
-@router.message(PurchaseForm.body_photo,F.text.in_({'⏭️ رد کردن','✅ اتمام عکس‌ها','✅ اتمام و ادامه'}))
+@router.message(PurchaseForm.body_photo,F.text.in_({'⏭️ رد کردن','⏭️ ادامه بدون عکس','✅ اتمام عکس‌ها','✅ اتمام و ادامه'}))
 async def finish_photos(m,state):
     async with photo_lock(m.from_user.id):
         d=await state.get_data()
         photos=stored_photos(d.get('body_photo_file_ids'))
+        if len(photos)<required_body_photos(d):
+            return await m.answer('برای این ارزیابی چهار عکس تازه از روبه‌رو، پشت، راست و چپ لازم است؛ عکس‌های باقی‌مانده را بفرست.')
         await state.update_data(body_photo_file_ids=photos,photo_adding=False,photo_replacing=False,photo_limit_media_group_id=None)
-        await finish_questionnaire(m,state)
+        await advance_after(state,m,'body_photo')
 
 @router.message(PurchaseForm.body_photo)
 async def body_photo_invalid(m,state):
@@ -719,15 +744,20 @@ async def custom_question(m,state):
 
 async def show_summary(msg,state,tg_id: int | None=None):
     d=await state.get_data(); code=d['product_code']; ids=d.get('body_photo_file_ids',[])
+    if 'body_photo' in d.get('active_steps',[]) and len(ids)<required_body_photos(d):
+        return await ask_photo(msg,state)
     text=f"📋 بررسی اطلاعات سفارش\n\nمحصول: {d['product_title']}\nنام: {d.get('name')}\nشماره: {d.get('phone')}\nسن: {d.get('age')}\nجنسیت: {d.get('gender')}\nقد: {d.get('height_cm')}\nوزن: {d.get('weight_kg')}\n"
     if code in ('nutrition','complete'): text+=f"حساسیت: {d.get('allergy','-')}\nمحدودیت: {d.get('restriction','-')}\nمکمل: {d.get('supplements','-')}\n"
     if code in ('training','complete'): text+=f"هدف: {d.get('goal','-')}\nسابقه تمرین: {d.get('training_history','-')}\n"
     text+=f"توضیحات: {d.get('notes') or '-'}\nعکس بدن: {len(ids)} عدد\n\nمبلغ: {money(d['price'])}"
     if d.get('configured_fields') is not None:
         labels={'name':'نام','phone':'تلفن','age':'سن','gender':'جنسیت','height':'قد','weight':'وزن','allergy':'حساسیت','restriction':'محدودیت غذایی','supplements':'مکمل','goal':'هدف','training_history':'سابقه تمرین','notes':'توضیحات','body_photo':'عکس‌ها'}
-        details=[f"{labels[field]}: {len(ids) if field=='body_photo' else d.get(KEYMAP[field]) or '-'}" for field in d['configured_fields']]
+        labels['measurements']='اندازه‌های بدن'
+        details=[f"{labels[field]}: {len(ids) if field=='body_photo' else measurements_text(d.get('measurements') or {}) if field=='measurements' else d.get(KEYMAP[field]) or '-'}" for field in d['configured_fields']]
         details.extend(f"{a['question']}: {a['answer']}" for a in d.get('custom_answers',[]))
         text=f"📋 بررسی اطلاعات سفارش\n\n{d['product_title']}\n"+'\n'.join(details)+f"\n\nمبلغ: {money(d['price'])}"
+    if d.get('configured_fields') is None and d.get('measurements'):
+        text+='\n\n'+measurements_text(d['measurements'])
     await state.update_data(photo_prompt_message_id=None)
     await state.set_state(PurchaseForm.confirm)
     await msg.answer('⏳ در حال پردازش اطلاعات…',reply_markup=await customer_menu(tg_id or msg.from_user.id))
@@ -740,7 +770,8 @@ async def restart(c,state):
     d=await state.get_data()
     active_steps=list(d.get('active_steps',PURCHASE_STEPS.get(d['product_code'],[])))
     keep={k:d.get(k) for k in ('product_id','product_code','product_title','price','renewal_of_order_id','name','phone','age','gender','height_cm','weight_kg','allergy','restriction','supplements','goal','training_history','notes')}
-    previous=normalize_photos(d.get('previous_body_photo_file_ids'))
+    previous=normalize_photos(d.get('body_photo_file_ids'))
+    keep['measurements']=d.get('measurements')
     keep.update({k:d.get(k) for k in ('product_version','configured_fields','questions')})
     await state.clear()
     await state.update_data(**keep,body_photo_file_ids=previous,previous_body_photo_file_ids=previous,photo_collecting=not bool(previous),active_steps=active_steps)
@@ -778,7 +809,7 @@ async def choose_payment(c,state):
         await c.answer('فروش موقتاً بسته است.',show_alert=True)
         return await c.message.answer('⏸️ فروش دوره‌ها موقتاً بسته است. کمی بعد دوباره تلاش کن.',reply_markup=await customer_menu(c.from_user.id))
     method=c.data.split(':')[1]; settings=get_settings(); mode=settings.payment_mode.lower()
-    allowed={'card'} if mode=='card_to_card' else ({'zarinpal'} if mode=='zarinpal' else ({'card','zarinpal'} if mode=='both' else {'mock'}))
+    allowed={'zarinpal'} if mode in {'zarinpal','both'} else ({'mock'} if mode=='mock' and settings.app_env!='production' else set())
     if method not in allowed:return await c.answer('این روش پرداخت فعال نیست.',show_alert=True)
     await c.answer('⏳ در حال ثبت سفارش…')
     d=await state.get_data(); p=await repo.get_product(d['product_id'])
@@ -789,21 +820,34 @@ async def choose_payment(c,state):
     snapshot={k:d.get(k) for k in ('name','phone','age','gender','height_cm','weight_kg','allergy','restriction','supplements','goal','training_history','notes','body_photo_file_ids')}
     if d.get('configured_fields') is not None:
         snapshot={KEYMAP[field]:d.get(KEYMAP[field]) for field in d['configured_fields']}
+    if 'measurements' in (d.get('configured_fields') or d.get('active_steps',[])):
+        try:
+            snapshot['measurements']=validate_measurements(d.get('measurements'),complete=True)
+        except ValueError:
+            await c.message.answer('اندازه‌های بدن هنوز کامل نشده‌اند؛ لطفاً شش اندازه را وارد کن. اطلاعات قبلی محفوظ است.')
+            await state.set_state(PurchaseForm.measurements)
+            return await prompt(state,c.message,'measurements')
+    if d.get('measurements'): snapshot['measurements']=d['measurements']
+    if 'body_photo' in d.get('active_steps',[]) and len(d.get('body_photo_file_ids') or [])<required_body_photos(d):
+        return await ask_photo(c.message,state)
     snapshot['custom_answers']=d.get('custom_answers',[])
     await state.set_state(PurchaseForm.submitting)
-    db_method='card_to_card' if method=='card' else method
+    db_method=method
     try: order=await repo.create_order(c.from_user.id,p,snapshot,db_method,d.get('renewal_of_order_id'))
-    except ValueError:
-        await state.clear()
-        return await c.message.answer('این دوره قبلاً خریده شده یا هنوز زمان تمدیدش نرسیده است. وضعیت دقیق را از «خرید دوره» ببین.',reply_markup=await customer_menu(c.from_user.id))
+    except ValueError as exc:
+        if str(exc) in {'plan already purchased; renew it','renewal not eligible'}:
+            await state.clear()
+            return await c.message.answer('این دوره قبلاً خریده شده یا هنوز زمان تمدیدش نرسیده است. وضعیت دقیق را از «خرید دوره» ببین.',reply_markup=await customer_menu(c.from_user.id))
+        if str(exc)=='four body photos required':
+            return await ask_photo(c.message,state)
+        await state.set_state(PurchaseForm.payment_method)
+        log.warning('Order validation rejected: %s',exc)
+        return await c.message.answer('اطلاعات یا شرایط سفارش نیاز به بررسی دارد؛ سفارش ثبت نشده و اطلاعات فرم محفوظ است. دوباره شرایط دوره را بررسی کن.',reply_markup=payment_methods_kb(mode))
     except Exception:
         record('bot','checkout','invoice','server_error')
         log.exception('create order failed'); await state.set_state(PurchaseForm.payment_method)
         return await c.message.answer('❌ ثبت سفارش انجام نشد. اتصال رو بررسی کن و دوباره تلاش کن.',reply_markup=payment_methods_kb(mode))
     record('bot','checkout','invoice')
-    if method=='card':
-        await state.update_data(order_id=order['id']); await state.set_state(PurchaseForm.receipt)
-        await c.message.answer(f"💳 پرداخت کارت‌به‌کارت\n\n💰 مبلغ: {money(p['price_irr'])}\n🏦 {settings.card_to_card_bank_info}\n\nبعد از واریز، عکس واضح رسید رو همین‌جا بفرست.",reply_markup=back_reply_kb()); return
     if method=='mock':
         paid=await repo.mark_mock_payment(order['id'],f"mock:{order['id']}")
         await state.clear()
@@ -818,31 +862,16 @@ async def choose_payment(c,state):
         log.exception('zarinpal create failed'); await state.clear(); await c.message.answer('❌ ساخت لینک پرداخت انجام نشد. سفارش ذخیره شده و از «سفارش‌های من» می‌تونی دوباره تلاش کنی.',reply_markup=pending_order_kb(order['id']))
 
 async def _handle_receipt(m, state, file_id: str, receipt_type: str):
-    if not is_customer(m.from_user.id):
-        return await state.clear()
-    d = await state.get_data(); oid = d.get('order_id')
-    if not oid:
-        await state.clear()
-        return await m.answer('این سفارش دیگر در انتظار رسید نیست.')
-    o = await repo.submit_receipt(oid, file_id, receipt_type)
-    if not o:
-        return await m.answer('این سفارش دیگر قابل ثبت رسید نیست.')
-    # Clear the FSM only after the receipt has been persisted.
     await state.clear()
-    await m.answer('🙏 با تشکر از خرید شما.\n\nرسید شما ثبت شد و به‌زودی وضعیت سفارش شما مشخص خواهد شد.', reply_markup=back_reply_kb())
+    await m.answer('پرداخت فقط از درگاه انجام می‌شود؛ دریافت رسید غیرفعال است.', reply_markup=await customer_menu(m.from_user.id))
 
 @router.message(PurchaseForm.receipt,F.photo)
 async def receipt_photo(m,state):
-    photo=m.photo[-1]
-    if photo.file_size and photo.file_size > get_settings().max_body_photo_mb * 1024 * 1024:
-        return await m.answer(f'❌ حجم رسید باید کمتر از {get_settings().max_body_photo_mb}MB باشه.')
-    return await _handle_receipt(m, state, photo.file_id, 'photo')
+    return await _handle_receipt(m,state,None,None)
 
 @router.message(PurchaseForm.receipt,F.document)
 async def receipt_document(m,state):
-    if await _valid_image_document(m):
-        return await _handle_receipt(m, state, m.document.file_id, 'document')
-    return await m.answer('❌ رسید باید فایل تصویری واقعی JPG/PNG/WEBP و در محدودهٔ حجم مجاز باشه.')
+    return await _handle_receipt(m,state,None,None)
 
 
 async def _valid_image_document(m: Message) -> bool:
@@ -860,7 +889,7 @@ async def _valid_image_document(m: Message) -> bool:
         return False
 
 @router.message(PurchaseForm.receipt)
-async def receipt_other(m): await m.answer('لطفاً عکس رسید واریز را ارسال کن.')
+async def receipt_other(m, state): await _handle_receipt(m,state,'','')
 
 # Back: one logical step, never jump to home except at first step.
 @router.message(F.text=='⬅️ بازگشت')
@@ -910,6 +939,16 @@ async def _send_photo_items(m: Message, title: str, items: list):
     for item in items[:6]:
         file_id=item.get('file_id') if isinstance(item,dict) else item
         kind=item.get('type','photo') if isinstance(item,dict) else 'photo'
+        if not file_id and isinstance(item,dict) and item.get('client_file_id'):
+            from app.services.content import asset_path
+            async with repo.db.acquire() as connection:
+                record_file=await connection.fetchrow('''SELECT f.storage_key,f.filename,f.byte_size FROM client_files f
+                    JOIN users u ON u.id=f.user_id WHERE f.id=$1 AND u.telegram_id=$2''',item['client_file_id'],m.chat.id)
+            if record_file and record_file['storage_key']:
+                path=asset_path(record_file['storage_key'])
+                if path.is_file():
+                    file_id=FSInputFile(path,filename=record_file['filename'])
+                    if (record_file['byte_size'] or 0)>10*1024*1024: kind='document'
         if file_id: selected.append((file_id,kind))
     if not selected:
         return await m.answer('عکس‌های این دوره دیگر در تلگرام قابل دریافت نیستند.')
@@ -1064,12 +1103,7 @@ async def pay_pending_order(c: CallbackQuery, state: FSMContext):
     method=o.get('payment_method')
     if method == 'card_to_card':
         await state.clear()
-        await state.update_data(order_id=oid)
-        await state.set_state(PurchaseForm.receipt)
-        ss=get_settings()
-        await c.message.answer(
-            f"💳 پرداخت کارت به کارت\n\nمبلغ: {money(o['amount'])}\n\n{ss.card_to_card_bank_info}\n\nبعد از واریز، عکس رسید را ارسال کن."
-        )
+        await c.message.answer('روش پرداخت این سفارش قدیمی غیرفعال شده است. اگر قبلاً واریز کرده‌ای، پیش از خرید دوباره با پشتیبانی تماس بگیر.')
         return
     if method == 'zarinpal':
         try:
@@ -1089,15 +1123,7 @@ async def pay_pending_order(c: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith('order:receipt:'))
 async def retry_rejected_receipt(c: CallbackQuery, state: FSMContext):
-    if not is_customer(c.from_user.id): return await c.answer('دسترسی ندارید.',show_alert=True)
-    try: oid=int(c.data.split(':')[2])
-    except (ValueError,IndexError): return await c.answer('درخواست نامعتبره.',show_alert=True)
-    o=await repo.get_user_order(oid,c.from_user.id)
-    if not o or o.get('status')!='payment_rejected' or o.get('payment_method')!='card_to_card':
-        return await c.answer('این سفارش منتظر رسید جدید نیست.',show_alert=True)
-    await state.clear(); await state.update_data(order_id=oid); await state.set_state(PurchaseForm.receipt)
-    await c.message.answer(f'🔁 رسید جدید سفارش #{oid} رو بفرست.\n\nفقط عکس واضح و کامل رسید پذیرفته می‌شه.',reply_markup=back_reply_kb())
-    await c.answer()
+    await c.answer('دریافت رسید غیرفعال شده است؛ پرداخت فقط از درگاه انجام می‌شود.',show_alert=True)
 
 
 @router.callback_query(F.data.startswith('order:cancel:'))
@@ -1177,6 +1203,14 @@ async def show_order_detail_message(m: Message, tg_id: int, oid: int, active_cou
         markup=renewal_order_kb(oid,bool(o.get('plan_file_id') or repo._json_object(o.get('product_snapshot')).get('delivery_mode') in {'content','channel'}),bool(o.get('renewal_eligible')))
     else:
         b=InlineKeyboardBuilder(); b.button(text='⬅️ تاریخچه سفارشات',callback_data='orders'); b.adjust(1); markup=b.as_markup()
+    if o['status']=='needs_info':
+        from app.db.core import db
+        async with db.acquire() as connection:
+            request_id=await connection.fetchval("SELECT id FROM order_info_requests WHERE order_id=$1 AND status='waiting'",oid)
+        if request_id:
+            b=InlineKeyboardBuilder.from_markup(markup)
+            b.button(text='📝 تکمیل اطلاعات این سفارش',callback_data=f'info:{request_id}'); b.adjust(1)
+            markup=b.as_markup()
     renewal=bool(o.get('renewal_of_order_id'))
     active_renewal=(f"\n\n🔄 تمدید #{o['active_renewal_id']}\n{progress_path(o['active_renewal_status'],True)}" if o.get('active_renewal_id') else '')
     code=order_code(oid)
@@ -1217,11 +1251,7 @@ async def send_plan_to_customer(m: Message, tg_id: int, oid: int):
 
 
 async def retry_receipt_for_customer(m: Message, state: FSMContext, tg_id: int, oid: int):
-    o=await repo.get_user_order(oid,tg_id)
-    if not o or o.get('status')!='payment_rejected' or o.get('payment_method')!='card_to_card':
-        return await m.answer('این سفارش منتظر رسید جدید نیست.')
-    await state.clear(); await state.update_data(order_id=oid); await state.set_state(PurchaseForm.receipt)
-    await m.answer(f'🔁 رسید جدید سفارش #{oid} رو بفرست. فقط عکس واضح و کامل رسید پذیرفته می‌شه.',reply_markup=back_reply_kb())
+    await m.answer('دریافت رسید غیرفعال شده است؛ پرداخت فقط از درگاه انجام می‌شود.')
 
 
 async def start_pending_payment(m: Message, state: FSMContext, tg_id: int, oid: int):
@@ -1229,8 +1259,7 @@ async def start_pending_payment(m: Message, state: FSMContext, tg_id: int, oid: 
     if not o or o['status'] != 'awaiting_payment':
         return await m.answer('این سفارش دیگر در انتظار پرداخت نیست.')
     if o.get('payment_method') == 'card_to_card':
-        await state.clear(); await state.update_data(order_id=oid); await state.set_state(PurchaseForm.receipt)
-        return await m.answer(f"💳 پرداخت کارت به کارت\n\nمبلغ: {money(o['amount'])}\n\n{get_settings().card_to_card_bank_info}\n\nبعد از واریز، عکس رسید را ارسال کن.")
+        return await m.answer('روش پرداخت این سفارش قدیمی غیرفعال است. اگر قبلاً واریز کرده‌ای، پیش از خرید دوباره با پشتیبانی تماس بگیر.')
     if o.get('payment_method') == 'zarinpal':
         try:
             pay=await payment.create_zarinpal(oid,o['amount'],o['product_title'])
@@ -1264,8 +1293,48 @@ async def confirm_cancel_order(m: Message, state: FSMContext):
     await repo.add_audit(m.from_user.id,'cancel_unpaid_order','order',int(oid))
     await m.answer(f'✅ {order_code(oid)} لغو شد. هر زمان خواستی می‌توانی سفارش تازه‌ای شروع کنی.',reply_markup=await customer_menu(m.from_user.id))
 
+@router.callback_query(F.data.startswith('info:'))
+async def open_information_request(c,state):
+    try: request_id=int(c.data.split(':')[1])
+    except (ValueError,IndexError): return await c.answer('درخواست نامعتبر است.',show_alert=True)
+    row=await client_records.owned_request(request_id,c.from_user.id)
+    if not row or row['status']!='waiting' or row['order_status']!='needs_info':
+        return await c.answer('این درخواست منتظر پاسخ شما نیست.',show_alert=True)
+    await c.answer()
+    await state.clear(); await state.update_data(info_request_id=request_id)
+    await state.set_state(CustomerInfoForm.waiting)
+    await c.message.answer(f"📝 تکمیل اطلاعات {order_code(row['order_id'])}\n\n{row['body']}\n\nمتن و فایل‌ها را همین‌جا بفرست؛ پاسخ‌های هر مرحله ذخیره می‌شوند. پس از تکمیل، «ثبت پاسخ برای بررسی» را بزن. این پاسخ به همین سفارش می‌رود.",reply_markup=choice_reply_kb(['👁 مرور پاسخ','✅ ثبت پاسخ برای بررسی','↩️ ادامه در فرصتی دیگر']))
+
+
+@router.message(CustomerInfoForm.waiting)
+async def information_response(m,state):
+    d=await state.get_data(); request_id=d.get('info_request_id')
+    if not request_id:
+        await state.clear(); return await m.answer('دکمه تکمیل اطلاعات را در پیام درخواست دوباره بزن.')
+    if m.text=='👁 مرور پاسخ':
+        items=await client_records.response_summary(request_id,m.from_user.id)
+        text='\n\n'.join(f"{i}. {item['content_text'] or ''}"+(f"\nپیوست: {item['file_name'] or item['content_type']}" if item['content_type']!='text' else '') for i,item in enumerate(items,1)) or 'هنوز پاسخی وارد نکرده‌ای.'
+        for part in split_message(text): await m.answer(part)
+        return
+    if m.text=='↩️ ادامه در فرصتی دیگر':
+        await state.clear()
+        return await m.answer('پاسخ‌های واردشده ذخیره‌اند؛ با همان دکمه می‌توانی ادامه بدهی.',reply_markup=await customer_menu(m.from_user.id))
+    if m.text=='✅ ثبت پاسخ برای بررسی':
+        if not await client_records.submit_response(request_id,m.from_user.id):
+            return await m.answer('ابتدا پاسخ را وارد کن؛ اگر قبلاً ثبت کرده‌ای منتظر بررسی مربی باش.')
+        await state.clear()
+        return await m.answer('✅ پاسخ ثبت شد و در صف بازبینی اطلاعات همین سفارش قرار گرفت.',reply_markup=await customer_menu(m.from_user.id))
+    if len(m.text or m.caption or '')>2000 or _draft_file_too_large(m) or not _draft_file_allowed(m):
+        return await m.answer('متن تا ۲۰۰۰ کاراکتر و فایل معتبر در محدوده حجم مجاز بفرست.')
+    try: saved=await client_records.append_response(request_id,m.from_user.id,_draft_item(m))
+    except ValueError: return await m.answer('حداکثر ۲۰ بخش پاسخ ثبت شده؛ «ثبت پاسخ برای بررسی» را بزن.')
+    if not saved:
+        await state.clear(); return await m.answer('این درخواست دیگر منتظر پاسخ نیست.',reply_markup=await customer_menu(m.from_user.id))
+    if not m.media_group_id: await m.answer('به پاسخ این سفارش اضافه شد؛ پس از تکمیل، ثبت پاسخ را بزن.')
+
+
 MAX_SUPPORT_DRAFT_ITEMS=10
-SAFE_SUPPORT_SUFFIXES={'.jpg','.jpeg','.png','.webp','.gif','.mp4','.mp3','.m4a','.ogg','.wav','.pdf','.doc','.docx','.xlsx','.zip','.txt'}
+SAFE_SUPPORT_SUFFIXES={'.jpg','.jpeg','.png','.webp','.gif','.heic','.mov','.mp4','.mp3','.m4a','.ogg','.wav','.pdf','.doc','.docx','.xlsx','.zip','.txt'}
 
 
 async def start_support(m,state,actor=None):
@@ -1273,8 +1342,11 @@ async def start_support(m,state,actor=None):
     if not is_customer(actor.id):return await m.answer('این بخش برای مشتری‌هاست.')
     if not await repo.has_course_access(actor.id):
         return await m.answer('🔒 پیام به مربی فقط برای افرادی فعال است که حداقل یک دوره را خریده‌اند. ابتدا از «🛒 خرید دوره» اقدام کن.',reply_markup=await customer_menu(actor.id))
-    await state.clear(); await state.update_data(support_mode='customer_compose',draft_items=[],draft_header_sent=False); await state.set_state(SupportForm.waiting)
-    await m.answer('💬 پیام برای مربی\n\nمتن، عکس یا فایل‌ها رو اضافه کن. وقتی پیامت کامل شد «✅ ارسال پیام» رو بزن.',reply_markup=customer_compose_kb())
+    previous=await state.get_data()
+    if previous.get('draft_items'):
+        return await m.answer('پیش‌نویس قبلی هنوز ارسال نشده است؛ ابتدا «✅ ارسال پیام» یا «❌ لغو ارسال پیام» را بفرست.')
+    await state.clear(); await state.update_data(support_mode='live',support_sent=False); await state.set_state(SupportForm.waiting)
+    await m.answer('💬 گفتگو با مربی\nهر متن، عکس یا فایلی که اینجا بفرستی مستقیماً ثبت می‌شود؛ تأیید دیگری لازم نیست. می‌توانی چند پیام پشت‌سرهم بفرستی.',reply_markup=customer_compose_kb())
 
 @router.callback_query(F.data=='support')
 async def support(c,state):
@@ -1357,6 +1429,23 @@ async def send_customer_draft(m: Message, state: FSMContext):
 async def support_message(m,state):
     if not is_customer(m.from_user.id): return
     d=await state.get_data()
+    if d.get('support_mode')=='live':
+        if m.text=='پایان گفتگو و بازگشت':
+            await state.clear()
+            return await m.answer('گفتگو بسته شد. همه پیام‌های شما با موفقیت ارسال و برای مربی ثبت شده‌اند.' if d.get('support_sent') else 'گفتگو بسته شد.',reply_markup=await customer_menu(m.from_user.id))
+        if not await repo.has_course_access(m.from_user.id):
+            await state.clear()
+            return await m.answer('دسترسی گفتگو فعال نیست؛ از پشتیبانی پیگیری کن.',reply_markup=await customer_menu(m.from_user.id))
+        if len(m.text or m.caption or '')>2000 or _draft_file_too_large(m) or not _draft_file_allowed(m):
+            return await m.answer('پیام ثبت نشد؛ متن تا ۲۰۰۰ کاراکتر و فایل معتبر در محدوده حجم مجاز بفرست.')
+        item=_draft_item(m); item.pop('message_id')
+        try:
+            await repo.add_support_message(m.from_user.id,m.message_id,direction='customer',sender_telegram_id=m.from_user.id,**item)
+        except Exception:
+            log.exception('Customer chat persistence failed')
+            return await m.answer('پیام ثبت نشد؛ لطفاً دوباره بفرست.')
+        await state.update_data(support_sent=True)
+        return
     if d.get('support_mode') != 'customer_compose': return
     if len(m.text or m.caption or '')>2000:
         return await m.answer('لطفاً هر متن یا کپشن را حداکثر ۲۰۰۰ کاراکتر بفرست.')
