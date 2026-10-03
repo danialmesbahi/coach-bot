@@ -86,9 +86,9 @@ Keep weekly VPS snapshots and daily PostgreSQL **and catalog-file** backups outs
 
 ## 6. Landing page on the main domain
 
-Layout: `sensibot.ir` serves the public site (`site` container, `127.0.0.1:3100`); `www.sensibot.ir` redirects to it; `panel.sensibot.ir` serves the staff panel through the inner ingress (`127.0.0.1:8090`). The main domain also forwards `/telegram/webhook`, `/payment/zarinpal/callback`, `/content/` and `/health` to the ingress, so `PUBLIC_BASE_URL=https://sensibot.ir` keeps the bot, payments and download links working.
+Layout: `sensibot.ir` serves the public site (`site` container, `127.0.0.1:3100`); `www.sensibot.ir` redirects to it; `apanel.sensibot.ir` serves the staff panel through the inner ingress (`127.0.0.1:8090`). The main domain also forwards `/telegram/webhook`, `/payment/zarinpal/callback`, `/content/` and `/health` to the ingress, so `PUBLIC_BASE_URL=https://sensibot.ir` keeps the bot, payments and download links working.
 
-1. DNS (ArvanCloud, CDN proxy off): `A` records `@`, `www` and `panel` → the VPS IPv4.
+1. DNS (ArvanCloud, CDN proxy off): `A` records `@`, `www` and `apanel` → the VPS IPv4.
 2. In the server's `.env` (read by Compose for the `site` build and runtime), set the public identity that must match the eNamad registration: `SITE_URL=https://sensibot.ir`, `BOT_USERNAME`, `BUSINESS_LEGAL_NAME`, `BUSINESS_ADDRESS`, `BUSINESS_POSTAL_CODE`, `BUSINESS_PHONE`, `BUSINESS_EMAIL`, `BUSINESS_HOURS`, and later `ENAMAD_ID`, `ENAMAD_CODE`, `SAMANDEHI_ID`, `SAMANDEHI_P`, `ZARINPAL_TRUST=true`. Empty values fall back to `site/sensi.config.ts`.
 3. HTTP first, then the certificate, then HTTPS:
 
@@ -96,7 +96,7 @@ Layout: `sensibot.ir` serves the public site (`site` container, `127.0.0.1:3100`
 sudo cp deploy/nginx-sensibot-http.conf /etc/nginx/sites-available/sensibot-http
 sudo ln -sf /etc/nginx/sites-available/sensibot-http /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
-sudo certbot certonly --webroot -w /var/www/html -d sensibot.ir -d www.sensibot.ir -d panel.sensibot.ir
+sudo certbot certonly --webroot -w /var/www/html -d sensibot.ir -d www.sensibot.ir -d apanel.sensibot.ir
 sudo cp deploy/nginx-sensibot-https.conf /etc/nginx/sites-available/sensibot-https
 sudo ln -sf /etc/nginx/sites-available/sensibot-https /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
