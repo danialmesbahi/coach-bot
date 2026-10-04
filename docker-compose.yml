@@ -8,6 +8,25 @@ services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    # tuned for a 4 GB server shared with the app containers
+    command:
+      - postgres
+      - -c
+      - shared_buffers=384MB
+      - -c
+      - effective_cache_size=1536MB
+      - -c
+      - work_mem=8MB
+      - -c
+      - maintenance_work_mem=96MB
+      - -c
+      - wal_compression=on
+      - -c
+      - checkpoint_completion_target=0.9
+      - -c
+      - log_min_duration_statement=1000
+    shm_size: 256mb
+    mem_limit: 1g
     environment:
       POSTGRES_DB: coach
       POSTGRES_USER: coach
@@ -25,6 +44,7 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    mem_limit: 256m
     command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD}"]
     environment:
       REDISCLI_AUTH: ${REDIS_PASSWORD}
@@ -41,6 +61,7 @@ services:
   bot:
     build: .
     restart: unless-stopped
+    mem_limit: 640m
     env_file:
       - .env
       - .env.live
@@ -70,6 +91,7 @@ services:
   web-api:
     build: .
     restart: unless-stopped
+    mem_limit: 640m
     env_file:
       - .env
       - .env.live
@@ -107,6 +129,7 @@ services:
       args:
         BACKEND_URL: http://web-api:8090
     restart: unless-stopped
+    mem_limit: 512m
     environment:
       BACKEND_URL: http://web-api:8090
     read_only: true
@@ -147,6 +170,7 @@ services:
         SAMANDEHI_P: ${SAMANDEHI_P:-}
         ZARINPAL_TRUST: ${ZARINPAL_TRUST:-}
     restart: unless-stopped
+    mem_limit: 512m
     # the same values at runtime, because pages are regenerated every 5 minutes
     environment:
       <<: *site-env
@@ -168,6 +192,7 @@ services:
   ingress:
     image: nginx:stable-alpine
     restart: unless-stopped
+    mem_limit: 96m
     user: "101:101"
     entrypoint: ["nginx", "-g", "daemon off;"]
     read_only: true

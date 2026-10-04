@@ -1,0 +1,21 @@
+# /etc/fail2ban/jail.local
+# SSH only: web traffic is rate-limited (429) instead of banned, because many
+# Iranian mobile users share one carrier IP and a ban would lock all of them out.
+[DEFAULT]
+backend = systemd
+bantime = 1h
+findtime = 10m
+maxretry = 4
+ignoreip = 127.0.0.1/8 ::1
+
+[sshd]
+enabled = true
+mode = aggressive
+
+[recidive]
+enabled = true
+backend = auto
+logpath = /var/log/fail2ban.log
+bantime = 1w
+findtime = 1d
+maxretry = 3

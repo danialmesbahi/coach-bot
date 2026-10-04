@@ -112,3 +112,15 @@ Every push to `main` runs **Checks**; when they pass, the **Release** workflow m
 - Install once: `sudo bash scripts/install_auto_deploy.sh`
 - Logs: `journalctl -u coach-bot-deploy -n 50`
 - Pause: `systemctl disable --now coach-bot-deploy.timer`
+
+## 8. Security, backups and monitoring
+
+Apply or re-apply with `sudo bash scripts/harden_server.sh` (idempotent). Configs live in `deploy/server/`.
+
+- **SSH**: keys only (`PasswordAuthentication no`, root by key only), max 3 tries, no forwarding. fail2ban bans an IP for 1 hour after 4 failures and for 1 week if it keeps coming back. If every key is lost, log in through the ArvanCloud web console.
+- **Updates**: unattended security updates nightly; if one needs a reboot it happens at 04:00 Tehran. Containers restart by themselves.
+- **Edge (host Nginx)**: per-IP limits (site 30 req/s, panel 20 req/s, with bursts; deliberately generous because Iranian carriers share IPs), slow-client timeouts, requests by bare IP or unknown host are dropped, HSTS on the panel. The landing page is cached at the edge for 60 s and served stale if the site container is down; `/_next/static` is cached for 30 days.
+- **Containers**: memory limits per service, so a runaway process is restarted on its own instead of exhausting the server. PostgreSQL is tuned for 4 GB.
+- **Backups**: `coach-bot-backup.timer` every hour. Database dumps are verified with `pg_restore` before being kept: 48 hourly, 30 daily (with uploaded catalog files and the `.env` files), 12 monthly, in `/var/backups/coach-bot` (root only). Off-site copy: create `/etc/coach-bot/rclone.conf` with a remote named `offsite` (for example an ArvanCloud Object Storage bucket, ideally wrapped in an rclone `crypt` remote) and every backup is mirrored there.
+- **Restore**: `sudo bash scripts/restore_backup.sh` lists backups; pass a dump path to restore. A safety dump of the current database is taken first.
+- **Monitoring**: `coach-bot-health.timer` every 5 minutes checks the site, panel, every container, disk, memory, certificate expiry, backup age and failed deploys, and messages the first `PLATFORM_TEAM_IDS` owner on Telegram (repeats every 6 hours while broken, and once on recovery).
