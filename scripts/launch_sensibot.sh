@@ -89,7 +89,10 @@ else
     fi
     grep -qE '^ZARINPAL_CALLBACK_URL=.+' .env.live && echo "    NOTE: ZARINPAL_CALLBACK_URL is set explicitly in .env.live; update it to https://$MAIN/payment/zarinpal/callback if it still uses the old domain."
     docker compose up -d --force-recreate bot web-api
+    # the inner ingress caches upstream addresses; refresh it after the API container is recreated
+    docker compose restart ingress
     sleep 8
+    curl -fsS --max-time 10 "https://$PANEL/health" >/dev/null || die "panel is not answering after the move"
     docker compose logs --tail=20 bot
     ok "bot moved to https://$MAIN"
   else
