@@ -25,6 +25,9 @@ from app.utils.media import BoundedBuffer, _inspect_upload
 from app.utils.measurements import MEASUREMENTS, parse_measurements, validate_measurements, measurements_text, required_body_photos
 
 router=Router(); log=logging.getLogger(__name__)
+# PAYMENT_MODE=pending: orders are saved now and paid once the ZarinPal gateway is approved
+PAYMENT_PENDING_NOTE=('⏳ درگاه پرداخت آنلاین در حال فعال‌سازی است.\n'
+                      'به‌محض فعال شدن، از «🧾 تاریخچه سفارشات» و دکمه «💳 ادامه پرداخت» پرداخت را انجام بده؛ اطلاعات سفارش محفوظ است.')
 
 def local_dt(value):
     return jalali_dt(value,get_settings().timezone)
@@ -787,7 +790,9 @@ async def confirm(c,state):
     if not is_customer(c.from_user.id):return await c.answer('دسترسی ندارید.',show_alert=True)
     settings=get_settings()
     await state.set_state(PurchaseForm.payment_method)
-    await c.message.edit_text('💳 روش پرداخت رو انتخاب کن\n\nبعد از تأیید پرداخت، سفارش مطابق شرایط دوره پردازش می‌شود.',reply_markup=payment_methods_kb(settings.payment_mode.lower()))
+    text=(f'📝 سفارشت آماده ثبت است\n\n{PAYMENT_PENDING_NOTE}' if settings.payment_pending
+          else '💳 روش پرداخت رو انتخاب کن\n\nبعد از تأیید پرداخت، سفارش مطابق شرایط دوره پردازش می‌شود.')
+    await c.message.edit_text(text,reply_markup=payment_methods_kb(settings.payment_mode.lower()))
     await c.answer()
 
 @router.callback_query(PurchaseForm.confirm,F.data=='form_back')
@@ -809,7 +814,7 @@ async def choose_payment(c,state):
         await c.answer('فروش موقتاً بسته است.',show_alert=True)
         return await c.message.answer('⏸️ فروش دوره‌ها موقتاً بسته است. کمی بعد دوباره تلاش کن.',reply_markup=await customer_menu(c.from_user.id))
     method=c.data.split(':')[1]; settings=get_settings(); mode=settings.payment_mode.lower()
-    allowed={'zarinpal'} if mode in {'zarinpal','both'} else ({'mock'} if mode=='mock' and settings.app_env!='production' else set())
+    allowed={'zarinpal'} if mode in {'zarinpal','both','pending'} else ({'mock'} if mode=='mock' and settings.app_env!='production' else set())
     if method not in allowed:return await c.answer('این روش پرداخت فعال نیست.',show_alert=True)
     await c.answer('⏳ در حال ثبت سفارش…')
     d=await state.get_data(); p=await repo.get_product(d['product_id'])
@@ -848,6 +853,9 @@ async def choose_payment(c,state):
         log.exception('create order failed'); await state.set_state(PurchaseForm.payment_method)
         return await c.message.answer('❌ ثبت سفارش انجام نشد. اتصال رو بررسی کن و دوباره تلاش کن.',reply_markup=payment_methods_kb(mode))
     record('bot','checkout','invoice')
+    if settings.payment_pending:
+        await state.clear()
+        return await c.message.answer(f"✅ سفارش {order_code(order['id'])} ثبت شد.\n\n{PAYMENT_PENDING_NOTE}",reply_markup=pending_order_kb(order['id']))
     if method=='mock':
         paid=await repo.mark_mock_payment(order['id'],f"mock:{order['id']}")
         await state.clear()
@@ -1101,6 +1109,8 @@ async def pay_pending_order(c: CallbackQuery, state: FSMContext):
     await c.answer('⏳ در حال آماده‌سازی پرداخت…')
 
     method=o.get('payment_method')
+    if get_settings().payment_pending:
+        return await c.message.answer(PAYMENT_PENDING_NOTE)
     if method == 'card_to_card':
         await state.clear()
         await c.message.answer('روش پرداخت این سفارش قدیمی غیرفعال شده است. اگر قبلاً واریز کرده‌ای، پیش از خرید دوباره با پشتیبانی تماس بگیر.')
@@ -1258,6 +1268,8 @@ async def start_pending_payment(m: Message, state: FSMContext, tg_id: int, oid: 
     o=await repo.get_user_order(oid,tg_id)
     if not o or o['status'] != 'awaiting_payment':
         return await m.answer('این سفارش دیگر در انتظار پرداخت نیست.')
+    if get_settings().payment_pending:
+        return await m.answer(PAYMENT_PENDING_NOTE)
     if o.get('payment_method') == 'card_to_card':
         return await m.answer('روش پرداخت این سفارش قدیمی غیرفعال است. اگر قبلاً واریز کرده‌ای، پیش از خرید دوباره با پشتیبانی تماس بگیر.')
     if o.get('payment_method') == 'zarinpal':

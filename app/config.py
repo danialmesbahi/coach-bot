@@ -1,6 +1,6 @@
 from functools import lru_cache
 from urllib.parse import urlsplit
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -65,6 +65,18 @@ class Settings(BaseSettings):
             return f'https://t.me/{username}'
         return f'tg://user?id={self.sensi_id}'
 
+    @field_validator('payment_mode', mode='before')
+    @classmethod
+    def _retire_card_to_card(cls, value):
+        # card-to-card was removed; an old value means "no gateway yet" instead of a crash
+        text = str(value or '').strip().lower()
+        return 'pending' if text == 'card_to_card' else text
+
+    @property
+    def payment_pending(self) -> bool:
+        """Orders are taken but paid later, once the gateway is approved (PAYMENT_MODE=pending)."""
+        return self.payment_mode == 'pending'
+
     @property
     def resolved_zarinpal_callback(self):
         return self.zarinpal_callback_url or (self.public_base_url.rstrip('/') + '/payment/zarinpal/callback' if self.public_base_url else '')
@@ -82,8 +94,8 @@ class Settings(BaseSettings):
         except ValueError as exc:
             raise RuntimeError('ADMIN_TEAM_IDS must contain only numeric Telegram IDs') from exc
         mode = self.payment_mode.lower()
-        if mode not in {'mock', 'zarinpal', 'both'}:
-            raise RuntimeError('PAYMENT_MODE must be zarinpal (mock is development-only)')
+        if mode not in {'mock', 'zarinpal', 'both', 'pending'}:
+            raise RuntimeError('PAYMENT_MODE must be zarinpal, or pending until the gateway is approved (mock is development-only)')
         if self.app_env.lower() == 'production':
             if self.web_dev_login:
                 raise RuntimeError('WEB_DEV_LOGIN is forbidden in production')

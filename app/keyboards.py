@@ -144,6 +144,9 @@ def payment_methods_kb(mode: str):
     rows=[]
     if mode in {'zarinpal', 'both'}:
         rows.append([InlineKeyboardButton(text='🔒 پرداخت امن زرین‌پال', callback_data='pay:zarinpal', style='primary')])
+    if mode == 'pending':
+        # no gateway yet: the order is saved now and paid once ZarinPal is approved
+        rows.append([InlineKeyboardButton(text='📝 ثبت سفارش (پرداخت بعد از فعال شدن درگاه)', callback_data='pay:zarinpal', style='primary')])
     if mode == 'mock':
         rows.append([InlineKeyboardButton(text='🧪 پرداخت آزمایشی', callback_data='pay:mock', style='success')])
     rows.append([InlineKeyboardButton(text=BACK, callback_data='payment_back')])
