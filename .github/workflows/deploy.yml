@@ -1,0 +1,35 @@
+name: Release
+# After Checks pass on main, move the `deploy` branch to the tested commit.
+# The server polls `deploy` (scripts/auto_deploy.sh) with its read-only key, so GitHub
+# never holds credentials for the server and untested commits are never deployed.
+on:
+  workflow_run:
+    workflows: [Checks]
+    types: [completed]
+    branches: [main]
+permissions:
+  contents: write
+concurrency:
+  group: release
+  cancel-in-progress: false
+jobs:
+  release:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+      - name: Only release the current tip of main
+        id: tip
+        run: |
+          tip=$(git rev-parse origin/main)
+          echo "tip=$tip" >> "$GITHUB_OUTPUT"
+          if [ "$tip" != "${{ github.event.workflow_run.head_sha }}" ]; then
+            echo "A newer commit is on main; its own Checks run will release it."
+          fi
+      - name: Move deploy branch
+        if: steps.tip.outputs.tip == github.event.workflow_run.head_sha
+        run: git push --force origin "${{ github.event.workflow_run.head_sha }}:refs/heads/deploy"
