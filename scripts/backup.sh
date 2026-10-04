@@ -8,6 +8,7 @@
 #   offsite:files/current uploaded catalog files, synced incrementally (each file uploaded once)
 #   offsite:files/history files deleted or replaced on the server, kept 30 days
 #   offsite:config/       .env files and trusted proxies, daily, kept 90 days
+# Once a day an AES-256 7z of the database and config also goes to the owner's Telegram.
 # On the server only the newest 6 dumps are kept (fast restore). Every dump is verified with
 # pg_restore before it is kept or uploaded.
 set -euo pipefail
@@ -38,7 +39,38 @@ keep=6
 [ "$(df --output=pcent / | tail -1 | tr -dc 0-9)" -ge 80 ] && keep=2
 ls -1 "$DEST/local" | sort | head -n -"$keep" | while read -r old; do rm -f "$DEST/local/$old"; done
 
-# 3. off-site copy
+# 3. daily encrypted copy to the owner's Telegram (first PLATFORM_TEAM_IDS), around 03:30 Tehran.
+#    7z AES-256 with encrypted headers; password in /etc/coach-bot/backup-archive.pass (made by
+#    harden_server.sh). Split into 45 MB parts because bots can send at most 50 MB per file.
+telegram_daily() {
+  local stamp pass token chat work parts part n=0
+  stamp=$(date -u +%Y%m%d)
+  [ "$(cat "$DEST/.last-telegram" 2>/dev/null)" = "$stamp" ] && return 0
+  pass=$(cat /etc/coach-bot/backup-archive.pass 2>/dev/null) || return 0
+  token=$(grep -E '^BOT_TOKEN=' .env.live | cut -d= -f2-)
+  chat=$(grep -E '^PLATFORM_TEAM_IDS=' .env.live | cut -d= -f2- | cut -d, -f1 | tr -dc 0-9)
+  [ -n "$pass" ] && [ -n "$token" ] && [ -n "$chat" ] && command -v 7z >/dev/null || return 0
+  work=$(mktemp -d)
+  cp "$dump" "$work/db-$ts.dump" && tar -C "$APP_DIR" -czf "$work/config.tar.gz" .env .env.live deploy/trusted-proxies.conf || { rm -rf "$work"; return 1; }
+  # (set -e does not apply inside a function called with ||, so every step is checked explicitly)
+  (cd "$work" && 7z a -t7z -mhe=on -mx=5 -v45m -p"$pass" "sensi-backup-$ts.7z" "db-$ts.dump" config.tar.gz >/dev/null) || { rm -rf "$work"; return 1; }
+  parts=$(ls "$work"/sensi-backup-"$ts".7z.* 2>/dev/null | sort)
+  [ -n "$parts" ] || { rm -rf "$work"; return 1; }
+  [ "$(echo "$parts" | wc -l)" -eq 1 ] && mv "$parts" "$work/sensi-backup-$ts.7z" && parts="$work/sensi-backup-$ts.7z"
+  for part in $parts; do
+    n=$((n + 1))
+    curl -fsS --max-time 300 "https://api.telegram.org/bot$token/sendDocument" \
+      -F "chat_id=$chat" -F "document=@$part" \
+      -F "caption=🗄 بکاپ روزانه سنسی $(date -u +%F) (بخش $n). با 7-Zip و رمز بکاپ باز می‌شود." \
+      | grep -q '"ok":true' || { rm -rf "$work"; return 1; }
+  done
+  rm -rf "$work"
+  echo "$stamp" > "$DEST/.last-telegram"
+  echo "[backup] daily encrypted copy sent to Telegram ($n file(s))"
+}
+telegram_daily || echo "[backup] Telegram copy failed; retrying next hour"
+
+# 4. off-site copy
 if ! { command -v rclone >/dev/null && [ -f /etc/coach-bot/rclone.conf ] && "${RCLONE[@]}" listremotes | grep -q '^offsite:'; }; then
   echo "[backup] local dump ok ($(du -h "$dump" | cut -f1)); OFF-SITE NOT CONFIGURED (run scripts/setup_offsite_backup.sh)"
   date -u +%FT%TZ > "$DEST/.last-success"

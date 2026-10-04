@@ -29,6 +29,10 @@ last=$(cat /var/backups/coach-bot/.last-success 2>/dev/null)
 if [ -z "$last" ] || [ $(( $(date +%s) - $(date -d "$last" +%s) )) -gt 7200 ]; then
   problems+=("No successful backup in the last 2 hours (last: ${last:-never})")
 fi
+tg=$(cat /var/backups/coach-bot/.last-telegram 2>/dev/null)
+if [ -f /etc/coach-bot/backup-archive.pass ] && [ "$tg" != "$(date -u +%Y%m%d)" ] && [ "$tg" != "$(date -u -d yesterday +%Y%m%d)" ]; then
+  problems+=("Daily Telegram backup was not sent (last: ${tg:-never}); make sure the owner has started the bot")
+fi
 if [ ! -f /etc/coach-bot/rclone.conf ]; then
   problems+=("Off-site backup is not configured: backups exist only on this server (run scripts/setup_offsite_backup.sh)")
 else

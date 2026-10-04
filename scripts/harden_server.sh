@@ -10,11 +10,25 @@ ok() { printf '\033[1;32m    OK\033[0m %s\n' "$*"; }
 die() { printf '\n\033[1;31m!! %s\033[0m\n' "$*"; exit 1; }
 [ "$(id -u)" -eq 0 ] || die "Run with sudo"
 
+# Package upgrades can restart Docker and networking and drop the SSH session, so the work runs
+# as a systemd unit: a disconnect no longer stops it. Its output is streamed here.
+if [ -z "${INVOCATION_ID:-}" ]; then
+  systemctl reset-failed coach-harden 2>/dev/null || true
+  start=$(date '+%Y-%m-%d %H:%M:%S')
+  systemd-run --unit=coach-harden --collect --same-dir --setenv=TERM=dumb bash "$APP/scripts/harden_server.sh"
+  journalctl -u coach-harden -f --since "$start" -o cat & follower=$!
+  sleep 2
+  while systemctl is-active -q coach-harden; do sleep 2; done
+  sleep 1; kill "$follower" 2>/dev/null
+  if journalctl -u coach-harden --since "$start" -o cat | grep -q "Failed with result"; then exit 1; fi
+  exit 0
+fi
+
 say "1/8 Security updates and tools"
 export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a
 apt-get update -qq
 apt-get -y -qq -o Dpkg::Options::=--force-confold upgrade >/dev/null
-apt-get -y -qq install fail2ban rclone unattended-upgrades >/dev/null
+apt-get -y -qq install fail2ban rclone unattended-upgrades p7zip-full >/dev/null
 cp $S/auto-upgrades.conf /etc/apt/apt.conf.d/52coach-auto-reboot
 ok "system up to date; nightly security updates with 04:00 reboot when needed"
 
@@ -64,6 +78,11 @@ fi
 
 say "6/8 Backups every hour (verified, sent off-site), restore with scripts/restore_backup.sh"
 mkdir -p /etc/coach-bot && chmod 700 /etc/coach-bot
+if [ ! -s /etc/coach-bot/backup-archive.pass ]; then
+  (umask 077; openssl rand -base64 24 | tr -d '
+/+=' | cut -c1-28 > /etc/coach-bot/backup-archive.pass)
+  NEW_ARCHIVE_PASS=1
+fi
 rm -rf /var/backups/coach-bot/hourly /var/backups/coach-bot/daily /var/backups/coach-bot/monthly
 cat > /etc/systemd/system/coach-bot-backup.service <<UNIT
 [Unit]
@@ -111,6 +130,13 @@ ls -lh /var/backups/coach-bot/local/ | sed 's/^/    /'
 [ -f /etc/coach-bot/rclone.conf ] || echo "    Off-site backup not configured yet: sudo bash scripts/setup_offsite_backup.sh"
 systemctl start coach-bot-health.service && ok "all health checks pass" || echo "    health check reported problems (see above)"
 
+if [ "${NEW_ARCHIVE_PASS:-0}" = 1 ]; then
+  echo
+  echo "================  SAVE THIS PASSWORD SOMEWHERE SAFE (not on this server)  ================"
+  echo "  Daily Telegram backups are 7z archives locked with:  $(cat /etc/coach-bot/backup-archive.pass)"
+  echo "  Show it again later with:  sudo cat /etc/coach-bot/backup-archive.pass"
+  echo "=========================================================================================="
+fi
 echo
 [ -f /var/run/reboot-required ] && echo "NOTE: updates need a reboot; it will happen automatically at 04:00 Tehran time (or run: sudo reboot)"
 systemctl list-timers 'coach-bot-*' --no-pager
