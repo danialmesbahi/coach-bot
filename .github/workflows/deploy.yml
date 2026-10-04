@@ -1,6 +1,6 @@
 name: Release
-# After Checks pass on main, move the `deploy` branch to the tested commit.
-# The server polls `deploy` (scripts/auto_deploy.sh) with its read-only key, so GitHub
+# After Checks pass on main, move the `live` tag to the tested commit.
+# The server polls `live` (scripts/auto_deploy.sh) with its read-only key, so GitHub
 # never holds credentials for the server and untested commits are never deployed.
 on:
   workflow_run:
@@ -30,6 +30,6 @@ jobs:
           if [ "$tip" != "${{ github.event.workflow_run.head_sha }}" ]; then
             echo "A newer commit is on main; its own Checks run will release it."
           fi
-      - name: Move deploy branch
+      - name: Move live tag
         if: steps.tip.outputs.tip == github.event.workflow_run.head_sha
-        run: git push --force origin "${{ github.event.workflow_run.head_sha }}:refs/heads/deploy"
+        run: git push --force origin "${{ github.event.workflow_run.head_sha }}:refs/tags/live"

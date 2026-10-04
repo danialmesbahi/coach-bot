@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 
 cat > /etc/systemd/system/coach-bot-deploy.service <<UNIT
 [Unit]
-Description=Deploy coach-bot from the GitHub deploy branch
+Description=Deploy coach-bot from the GitHub live tag
 After=network-online.target docker.service
 Wants=network-online.target
 

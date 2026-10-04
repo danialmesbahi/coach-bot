@@ -1,17 +1,74 @@
 version: 2
+# Monthly, one grouped PR per ecosystem, opened against `dev` (never straight to production).
+# Major versions are skipped here; upgrade those deliberately. Security updates still arrive.
 updates:
   - package-ecosystem: pip
     directory: /
-    schedule: {interval: weekly}
+    target-branch: dev
+    schedule: {interval: monthly}
+    groups:
+      all:
+        patterns: ["*"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: npm
     directory: /web
-    schedule: {interval: weekly}
+    target-branch: dev
+    schedule: {interval: monthly}
+    groups:
+      all:
+        patterns: ["*"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+  - package-ecosystem: npm
+    directory: /site
+    target-branch: dev
+    schedule: {interval: monthly}
+    groups:
+      all:
+        patterns: ["*"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: docker
     directory: /
-    schedule: {interval: weekly}
+    target-branch: dev
+    schedule: {interval: monthly}
+    groups:
+      all:
+        patterns: ["*"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: docker
     directory: /web
-    schedule: {interval: weekly}
+    target-branch: dev
+    schedule: {interval: monthly}
+    groups:
+      all:
+        patterns: ["*"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+  - package-ecosystem: docker
+    directory: /site
+    target-branch: dev
+    schedule: {interval: monthly}
+    groups:
+      all:
+        patterns: ["*"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: /
-    schedule: {interval: weekly}
+    target-branch: dev
+    schedule: {interval: monthly}
+    groups:
+      all:
+        patterns: ["*"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Pull-based deploy, run every minute by coach-bot-deploy.timer (see scripts/install_auto_deploy.sh).
-# Deploys the `deploy` branch, which GitHub moves only after Checks pass on main.
+# Deploys the `live` tag, which GitHub moves only after Checks pass on main.
 # Health-checks the result and rolls back to the previous commit if anything fails.
 set -euo pipefail
 
 APP_DIR=/opt/coach-bot
-BRANCH=deploy
+TAG=live
 PANEL=apanel.sensibot.ir
 cd "$APP_DIR"
 exec 9>/run/coach-bot-deploy.lock
@@ -13,9 +13,9 @@ flock -n 9 || exit 0
 
 log() { echo "[deploy] $*"; }
 
-git fetch -q origin "$BRANCH"
+git fetch -q --force origin "refs/tags/$TAG:refs/tags/$TAG"
 old=$(git rev-parse HEAD)
-new=$(git rev-parse "origin/$BRANCH")
+new=$(git rev-parse "refs/tags/$TAG^{commit}")
 [ "$old" = "$new" ] && exit 0
 # a commit that already failed and was rolled back is not retried; the next push is
 STATE=/var/lib/coach-bot-deploy
