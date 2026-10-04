@@ -1,48 +1,76 @@
 #!/usr/bin/env bash
 # Hourly backup, run by coach-bot-backup.timer (installed by scripts/harden_server.sh).
-#   hourly/  database dump every hour, newest 48 kept
-#   daily/   database + uploaded catalog files + server config (.env files), newest 30 kept
-#   monthly/ first daily backup of each month, newest 12 kept
-# Every dump is verified with pg_restore before it is kept. If /etc/coach-bot/rclone.conf
-# defines a remote named "offsite", the whole backup tree is mirrored there as well.
+# The server disk is small, so backups live OFF the server (rclone remote "offsite",
+# configured by scripts/setup_offsite_backup.sh, encrypted with rclone crypt):
+#   offsite:db/hourly/    database dump every hour, kept 7 days
+#   offsite:db/daily/     first dump of each day, kept 90 days
+#   offsite:db/monthly/   first dump of each month, kept 2 years
+#   offsite:files/current uploaded catalog files, synced incrementally (each file uploaded once)
+#   offsite:files/history files deleted or replaced on the server, kept 30 days
+#   offsite:config/       .env files and trusted proxies, daily, kept 90 days
+# On the server only the newest 6 dumps are kept (fast restore). Every dump is verified with
+# pg_restore before it is kept or uploaded.
 set -euo pipefail
 APP_DIR=/opt/coach-bot
 DEST=/var/backups/coach-bot
+RCLONE=(rclone --config /etc/coach-bot/rclone.conf --quiet)
 cd "$APP_DIR"
 umask 077
-mkdir -p "$DEST"/{hourly,daily,monthly}
+mkdir -p "$DEST/local"
 exec 9>/run/coach-bot-backup.lock
 flock -n 9 || exit 0
 
 ts=$(date -u +%Y%m%dT%H%MZ)
-tmp="$DEST/.db-$ts.dump.part"
-trap 'rm -f "$tmp" "$DEST"/.files-*.part' EXIT
+day=$(date -u +%Y%m%d)
+month=$(date -u +%Y%m)
+tmp="$DEST/.db-$ts.part"
+trap 'rm -f "$DEST"/.db-*.part "$DEST"/.config-*.part' EXIT
 
-# consistent snapshot of the whole database (custom format, compressed)
+# 1. consistent, verified database dump
 docker compose exec -T postgres pg_dump -U coach -d coach -Fc -Z 6 > "$tmp"
-docker compose exec -T postgres pg_restore --list < "$tmp" > /dev/null
 [ -s "$tmp" ] || { echo "[backup] empty dump" >&2; exit 1; }
-mv "$tmp" "$DEST/hourly/db-$ts.dump"
+docker compose exec -T postgres pg_restore --list < "$tmp" > /dev/null
+dump="$DEST/local/db-$ts.dump"
+mv "$tmp" "$dump"
 
-today=$(date -u +%Y%m%d)
-if ! ls "$DEST/daily/" 2>/dev/null | grep -q "^$today"; then
-  d="$DEST/daily/$ts"
-  mkdir -p "$d"
-  cp "$DEST/hourly/db-$ts.dump" "$d/db.dump"
-  vol=$(docker volume inspect -f '{{.Mountpoint}}' coach-bot_catalogfiles)
-  tar -C "$vol" -czf "$DEST/.files-$ts.part" . && mv "$DEST/.files-$ts.part" "$d/catalog-files.tar.gz"
-  tar -C "$APP_DIR" -czf "$d/config.tar.gz" .env .env.live deploy/trusted-proxies.conf
-  (cd "$d" && sha256sum ./* > SHA256SUMS)
-  [ "$(date -u +%d)" = "01" ] && cp -a "$d" "$DEST/monthly/$ts"
+# 2. keep only a few dumps on the server; fewer when the disk is getting full
+keep=6
+[ "$(df --output=pcent / | tail -1 | tr -dc 0-9)" -ge 80 ] && keep=2
+ls -1 "$DEST/local" | sort | head -n -"$keep" | while read -r old; do rm -f "$DEST/local/$old"; done
+
+# 3. off-site copy
+if ! { command -v rclone >/dev/null && [ -f /etc/coach-bot/rclone.conf ] && "${RCLONE[@]}" listremotes | grep -q '^offsite:'; }; then
+  echo "[backup] local dump ok ($(du -h "$dump" | cut -f1)); OFF-SITE NOT CONFIGURED (run scripts/setup_offsite_backup.sh)"
+  date -u +%FT%TZ > "$DEST/.last-success"
+  exit 0
 fi
 
-prune() { ls -1 "$1" | sort | head -n -"$2" | while read -r old; do rm -rf "${1:?}/$old"; done; }
-prune "$DEST/hourly" 48
-prune "$DEST/daily" 30
-prune "$DEST/monthly" 12
+"${RCLONE[@]}" copyto "$dump" "offsite:db/hourly/db-$ts.dump"
+"${RCLONE[@]}" lsf "offsite:db/daily/" 2>/dev/null | grep -q "^db-$day" || "${RCLONE[@]}" copyto "$dump" "offsite:db/daily/db-$ts.dump"
+"${RCLONE[@]}" lsf "offsite:db/monthly/" 2>/dev/null | grep -q "^db-$month" || "${RCLONE[@]}" copyto "$dump" "offsite:db/monthly/db-$ts.dump"
 
-if command -v rclone >/dev/null && [ -f /etc/coach-bot/rclone.conf ] && rclone --config /etc/coach-bot/rclone.conf listremotes | grep -q '^offsite:'; then
-  rclone --config /etc/coach-bot/rclone.conf sync "$DEST" offsite:coach-bot --exclude '.*' --transfers 2 --quiet
+# uploaded files: incremental; anything removed or replaced on the server moves to history/<date>
+vol=$(docker volume inspect -f '{{.Mountpoint}}' coach-bot_catalogfiles)
+"${RCLONE[@]}" sync "$vol" offsite:files/current --backup-dir "offsite:files/history/$day" --transfers 4
+
+# server configuration, once a day
+if ! "${RCLONE[@]}" lsf offsite:config/ 2>/dev/null | grep -q "^config-$day"; then
+  tar -C "$APP_DIR" -czf "$DEST/.config-$ts.part" .env .env.live deploy/trusted-proxies.conf
+  "${RCLONE[@]}" copyto "$DEST/.config-$ts.part" "offsite:config/config-$ts.tar.gz"
 fi
+
+# off-site retention
+"${RCLONE[@]}" delete --min-age 7d offsite:db/hourly
+"${RCLONE[@]}" delete --min-age 90d offsite:db/daily
+"${RCLONE[@]}" delete --min-age 730d offsite:db/monthly
+"${RCLONE[@]}" delete --min-age 90d offsite:config
+# history folders are named by the day files left the server (moved files keep their old dates)
+cutoff=$(date -u -d '30 days ago' +%Y%m%d)
+"${RCLONE[@]}" lsf --dirs-only offsite:files/history 2>/dev/null | while read -r dir; do
+  dir=${dir%/}
+  if [[ "$dir" =~ ^[0-9]{8}$ && "$dir" < "$cutoff" ]]; then "${RCLONE[@]}" purge "offsite:files/history/$dir"; fi
+done
+
 date -u +%FT%TZ > "$DEST/.last-success"
-echo "[backup] ok db-$ts.dump ($(du -h "$DEST/hourly/db-$ts.dump" | cut -f1))"
+date -u +%FT%TZ > "$DEST/.last-offsite"
+echo "[backup] ok db-$ts.dump ($(du -h "$dump" | cut -f1)) + files, copied off-site"

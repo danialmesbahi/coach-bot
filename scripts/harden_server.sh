@@ -62,8 +62,9 @@ else
   die "nginx test failed; previous nginx config restored"
 fi
 
-say "6/8 Backups every hour (verified), restore with scripts/restore_backup.sh"
+say "6/8 Backups every hour (verified, sent off-site), restore with scripts/restore_backup.sh"
 mkdir -p /etc/coach-bot && chmod 700 /etc/coach-bot
+rm -rf /var/backups/coach-bot/hourly /var/backups/coach-bot/daily /var/backups/coach-bot/monthly
 cat > /etc/systemd/system/coach-bot-backup.service <<UNIT
 [Unit]
 Description=Back up the coach-bot database and files
@@ -106,7 +107,8 @@ systemctl enable -q --now coach-bot-backup.timer coach-bot-health.timer
 
 say "8/8 First backup and health check"
 systemctl start coach-bot-backup.service && journalctl -u coach-bot-backup -n 1 -o cat --no-pager | sed 's/^/    /'
-ls -lh /var/backups/coach-bot/daily/*/ | sed 's/^/    /'
+ls -lh /var/backups/coach-bot/local/ | sed 's/^/    /'
+[ -f /etc/coach-bot/rclone.conf ] || echo "    Off-site backup not configured yet: sudo bash scripts/setup_offsite_backup.sh"
 systemctl start coach-bot-health.service && ok "all health checks pass" || echo "    health check reported problems (see above)"
 
 echo

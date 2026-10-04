@@ -29,6 +29,14 @@ last=$(cat /var/backups/coach-bot/.last-success 2>/dev/null)
 if [ -z "$last" ] || [ $(( $(date +%s) - $(date -d "$last" +%s) )) -gt 7200 ]; then
   problems+=("No successful backup in the last 2 hours (last: ${last:-never})")
 fi
+if [ ! -f /etc/coach-bot/rclone.conf ]; then
+  problems+=("Off-site backup is not configured: backups exist only on this server (run scripts/setup_offsite_backup.sh)")
+else
+  off=$(cat /var/backups/coach-bot/.last-offsite 2>/dev/null)
+  if [ -z "$off" ] || [ $(( $(date +%s) - $(date -d "$off" +%s) )) -gt 7200 ]; then
+    problems+=("No successful off-site backup in the last 2 hours (last: ${off:-never})")
+  fi
+fi
 [ -f /var/lib/coach-bot-deploy/failed ] && problems+=("Last automatic deploy failed and was rolled back (commit $(cut -c1-7 /var/lib/coach-bot-deploy/failed))")
 
 send() {
