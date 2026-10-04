@@ -104,3 +104,11 @@ sudo nginx -t && sudo systemctl reload nginx
 
 4. Start the site: `sudo docker compose up -d --build site`, then check `curl -fsS http://127.0.0.1:3100/robots.txt` and `https://sensibot.ir`.
 5. Move the bot: set `PUBLIC_BASE_URL=https://sensibot.ir` in `.env.live` and run `sudo docker compose up -d bot web-api` (the bot re-registers its webhook on start). Register `https://sensibot.ir` as the website in the ZarinPal merchant panel.
+
+## 7. Automatic deploy
+
+Every push to `main` runs **Checks**; when they pass, the **Release** workflow moves the `deploy` branch to that commit. On the server, `coach-bot-deploy.timer` runs `scripts/auto_deploy.sh` every minute: it fetches `deploy` with the read-only deploy key, rebuilds, restarts the inner ingress, health-checks the panel API and the site, and rolls back to the previous commit if they fail (a failed commit is not retried; push a fix). GitHub holds no server credentials.
+
+- Install once: `sudo bash scripts/install_auto_deploy.sh`
+- Logs: `journalctl -u coach-bot-deploy -n 50`
+- Pause: `systemctl disable --now coach-bot-deploy.timer`
