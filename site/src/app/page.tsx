@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import Image from "next/image";
 import CalorieCalculator from "@/components/calorie-calculator";
 import HeroLight from "@/components/hero-light";
@@ -13,6 +14,10 @@ import { getCatalog, type Plan } from "@/lib/catalog";
 import { faqs } from "@/lib/faq";
 import { journey } from "@/lib/journey";
 import { botUrl, config, site } from "@/lib/site";
+
+// TEMP (eNamad verification): home page title replaced with the eNamad code.
+// Remove this export after verification to restore config.seo.title.
+export const metadata: Metadata = { title: { absolute: "۴۷۳۱۲۸۷۲" } };
 
 // Programs come from the panel's catalog; the page is regenerated every 5 minutes.
 export const revalidate = 300;
