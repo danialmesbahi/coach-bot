@@ -58,8 +58,8 @@ const config = {
   },
   // کدهای نمادها پس از دریافت از پنل هر سامانه.
   trust: {
-    enamadId: env("ENAMAD_ID", ""),
-    enamadCode: env("ENAMAD_CODE", ""),
+    enamadId: env("ENAMAD_ID", "8059358"),
+    enamadCode: env("ENAMAD_CODE", "ncokpOSoUhKx56fqoob7Dz2GZISSoUdi"),
     samandehiId: env("SAMANDEHI_ID", ""),
     samandehiP: env("SAMANDEHI_P", ""),
     zarinpal: env("ZARINPAL_TRUST", "") === "true",
