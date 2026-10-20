@@ -18,8 +18,13 @@ class ZarinpalGateway:
     REQUEST_URL = 'https://payment.zarinpal.com/pg/v4/payment/request.json'
     VERIFY_URL = 'https://payment.zarinpal.com/pg/v4/payment/verify.json'
     START_URL = 'https://www.zarinpal.com/pg/StartPay/{authority}'
+    SANDBOX_REQUEST_URL = 'https://sandbox.zarinpal.com/pg/v4/payment/request.json'
+    SANDBOX_VERIFY_URL = 'https://sandbox.zarinpal.com/pg/v4/payment/verify.json'
+    SANDBOX_START_URL = 'https://sandbox.zarinpal.com/pg/StartPay/{authority}'
     def __init__(self):
         s=get_settings(); self.merchant_id=s.zarinpal_merchant_id; self.callback=s.resolved_zarinpal_callback
+        if s.zarinpal_sandbox:
+            self.REQUEST_URL,self.VERIFY_URL,self.START_URL=self.SANDBOX_REQUEST_URL,self.SANDBOX_VERIFY_URL,self.SANDBOX_START_URL
     async def create(self, order_id:int, amount:int, description:str)->PaymentResult:
         if not self.merchant_id or not self.callback: raise RuntimeError('Zarinpal is not configured')
         payload={'merchant_id':self.merchant_id,'amount':toman_to_irr(amount),'description':description[:250],'callback_url':self.callback,'metadata':{'order_id':str(order_id)}}

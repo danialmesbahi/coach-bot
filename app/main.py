@@ -89,7 +89,6 @@ async def _stop_task(task):
 
 async def run_polling(dp, redis, background_tasks):
     try:
-        await prepare_polling()
         await dp.start_polling(
             bot,
             allowed_updates=dp.resolve_used_update_types(),
@@ -105,6 +104,11 @@ async def prepare_polling():
     delay=5
     while True:
         try:
+            info=await bot.get_webhook_info()
+            if info.url and not settings.allow_webhook_takeover:
+                # deleteWebhook here would silently cut the live bot off from Telegram.
+                raise RuntimeError('This BOT_TOKEN has a live webhook, so it is the production bot. '
+                                   'Put a separate test bot token in the local .env (see docs/LOCAL_DEV.md).')
             await bot.delete_webhook(drop_pending_updates=False)
             await bot.me()
             return
@@ -141,6 +145,10 @@ async def main():
     await db.connect()
     redis=Redis.from_url(settings.redis_url, encoding='utf-8', decode_responses=True)
     await redis.ping()
+    production=settings.app_env.lower() == 'production'
+    if not production:
+        # Before anything touches the bot, so a production token is refused untouched.
+        await prepare_polling()
     try:
         await bot.set_my_commands([
             BotCommand(command='start',description='شروع و نمایش پنل'),
@@ -152,7 +160,7 @@ async def main():
     dp=await build_dispatcher(redis)
     from app.services.client_archive import run_client_archive_loop
     background_tasks=asyncio.gather(run_fulfillment_loop(bot),run_telemetry_loop('bot'),run_client_archive_loop(bot))
-    if settings.app_env.lower() == 'production':
+    if production:
         await run_webhook(dp,redis,background_tasks)
     else:
         await run_polling(dp,redis,background_tasks)

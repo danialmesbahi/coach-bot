@@ -21,7 +21,7 @@
 ## راه‌اندازی
 
 1. `.env.example` را به `.env` و `.env.live.example` را به `.env.live` کپی کن؛ مقادیر واقعی را فقط در فایل‌های بدون پسوند example بنویس.
-2. `BOT_TOKEN`، `SENSI_ID`، `ADMIN_TEAM_IDS`، passwordهای PostgreSQL/Redis و URLهای آن‌ها را تنظیم کن.
+2. `BOT_TOKEN`، `SENSI_ID`، `ADMIN_TEAM_IDS`، passwordهای PostgreSQL/Redis و URLهای آن‌ها را تنظیم کن. در لوکال فقط توکن یک ربات تست جداگانه بگذار، نه توکن ربات اصلی ([docs/LOCAL_DEV.md](docs/LOCAL_DEV.md)).
 3. برای توسعه:
 
 ```bash

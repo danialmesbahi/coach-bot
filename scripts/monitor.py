@@ -21,6 +21,8 @@ BACKUPS = '/var/backups/coach-bot'
 TEHRAN = dt.timezone(dt.timedelta(hours=3, minutes=30))
 SERVICES = ['postgres', 'redis', 'bot', 'web-api', 'web', 'site', 'ingress']
 URLS = {'سایت': 'https://sensibot.ir/robots.txt', 'پنل': 'https://apanel.sensibot.ir/health'}
+# The public URLs go out through ArvanCloud's CDN; the origin tells a CDN hiccup from a real outage.
+ORIGINS = {'سایت': 'http://127.0.0.1:3100/robots.txt'}
 REPORT_HOUR = 8
 REPEAT_SECONDS = 6 * 3600
 
@@ -262,12 +264,18 @@ def prune_history():
 
 # ---------- checks ----------
 
-def url_ok(url):
-    try:
-        with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'sensi-monitor'}), timeout=15) as r:
-            return 200 <= r.status < 400
-    except Exception:
-        return False
+def url_ok(url, attempts=2):
+    # one retry: a single dropped request through the CDN is not an outage
+    for attempt in range(attempts):
+        if attempt:
+            time.sleep(5)
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'sensi-monitor'}), timeout=15) as r:
+                if 200 <= r.status < 400:
+                    return True
+        except Exception:
+            pass
+    return False
 
 
 def file_text(path):
@@ -292,7 +300,11 @@ def problems_now(s, prev, state):
 
     for name, url in URLS.items():
         if not url_ok(url):
-            add(f'url:{name}', f'{name} جواب نمی‌دهد ({url})')
+            origin = ORIGINS.get(name)
+            if origin and url_ok(origin, attempts=1):
+                add(f'url:{name}', f'{name} از مسیر CDN آروان جواب نمی‌دهد، ولی خود سرور سالم است ({url})')
+            else:
+                add(f'url:{name}', f'{name} جواب نمی‌دهد ({url})')
     cont = containers()
     old = state.get('containers', {})
     for svc in SERVICES:

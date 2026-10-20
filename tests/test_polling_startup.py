@@ -9,7 +9,7 @@ from aiogram.exceptions import TelegramNetworkError,TelegramUnauthorizedError
 def test_polling_startup_recovers_with_capped_backoff(monkeypatch):
     from app import main
     network=TelegramNetworkError(method='deleteWebhook',message='offline')
-    bot=SimpleNamespace(delete_webhook=AsyncMock(side_effect=[network]*6+[True]),me=AsyncMock())
+    bot=SimpleNamespace(get_webhook_info=AsyncMock(return_value=SimpleNamespace(url='')),delete_webhook=AsyncMock(side_effect=[network]*6+[True]),me=AsyncMock())
     sleep=AsyncMock()
     monkeypatch.setattr(main,'bot',bot)
     monkeypatch.setattr(main.asyncio,'sleep',sleep)
@@ -22,7 +22,28 @@ def test_polling_startup_recovers_with_capped_backoff(monkeypatch):
 def test_polling_startup_does_not_retry_credentials_or_cancellation(monkeypatch):
     from app import main
     for error in (TelegramUnauthorizedError(method='deleteWebhook',message='invalid'),asyncio.CancelledError()):
-        bot=SimpleNamespace(delete_webhook=AsyncMock(side_effect=error),me=AsyncMock())
+        bot=SimpleNamespace(get_webhook_info=AsyncMock(return_value=SimpleNamespace(url='')),delete_webhook=AsyncMock(side_effect=error),me=AsyncMock())
         monkeypatch.setattr(main,'bot',bot)
         with pytest.raises(type(error)):asyncio.run(main.prepare_polling())
         bot.delete_webhook.assert_awaited_once()
+
+
+def test_polling_refuses_the_production_bot(monkeypatch):
+    from app import main
+    bot=SimpleNamespace(get_webhook_info=AsyncMock(return_value=SimpleNamespace(url='https://sensibot.ir/telegram/webhook')),delete_webhook=AsyncMock(),me=AsyncMock())
+    monkeypatch.setattr(main,'bot',bot)
+    with pytest.raises(RuntimeError,match='test bot token'):asyncio.run(main.prepare_polling())
+    bot.delete_webhook.assert_not_awaited()
+    monkeypatch.setattr(main.settings,'allow_webhook_takeover',True)
+    asyncio.run(main.prepare_polling())
+    bot.delete_webhook.assert_awaited_once()
+
+
+def test_zarinpal_uses_sandbox_outside_production(monkeypatch):
+    from app.services import payment
+    settings=payment.get_settings()
+    monkeypatch.setattr(settings,'app_env','development')
+    assert payment.ZarinpalGateway().REQUEST_URL.startswith('https://sandbox.zarinpal.com/')
+    assert payment.ZarinpalGateway().START_URL.startswith('https://sandbox.zarinpal.com/')
+    monkeypatch.setattr(settings,'app_env','production')
+    assert payment.ZarinpalGateway().REQUEST_URL.startswith('https://payment.zarinpal.com/')
