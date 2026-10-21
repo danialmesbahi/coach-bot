@@ -7,14 +7,14 @@ import json
 from html import escape
 from pathlib import Path
 
-FONT = Path(__file__).resolve().parent.parent / 'static' / 'yekan-fanum.woff2'
-FONT_URL = '/pay/assets/yekan-fanum.woff2'
+FONT = Path(__file__).resolve().parent.parent / 'web' / 'IRANYekanXVFaNumVF.woff2'
+FONT_URL = '/pay/assets/yekan.woff2'
 
 _ICONS = {
     'ok': '<path d="M15 25.5l6.5 6.5L34 18.5" class="draw"/>',
     'fail': '<path d="M17 17l14 14M31 17L17 31" class="draw"/>',
     'wait': '<rect x="16" y="22" width="16" height="12" rx="3"/><path d="M19.5 22v-3.5a4.5 4.5 0 0 1 9 0V22"/>',
-    'info': '<path d="M24 16v.5M24 22v10"/>',
+    'info': '<path d="M24 15v11M24 32.5v.5"/>',
 }
 
 _CSS = '''
@@ -53,8 +53,8 @@ background:var(--ember);color:#0b0c0e;font-weight:900;font-size:16px;text-decora
 @media (prefers-reduced-motion:reduce){*{animation:none!important}.draw{stroke-dashoffset:0}}
 '''
 
-_GLOW = {'ok': 'rgba(34,197,94,.16)', 'fail': 'rgba(244,63,94,.14)', 'wait': 'rgba(255,91,31,.18)', 'info': 'rgba(255,91,31,.12)'}
-_TONE = {'ok': 'var(--ok)', 'fail': 'var(--fail)', 'wait': 'var(--ember)', 'info': 'var(--ember)'}
+_GLOW = {'ok': 'rgba(34,197,94,.16)', 'fail': 'rgba(244,63,94,.14)', 'wait': 'rgba(255,91,31,.18)', 'info': 'rgba(245,158,11,.14)'}
+_TONE = {'ok': 'var(--ok)', 'fail': 'var(--fail)', 'wait': 'var(--ember)', 'info': '#f59e0b'}
 
 _LOGO = ('<svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" fill="#ff5b1f"/>'
          '<path d="M5 18h5.2l2.4-7.5 4.2 13 2.6-8 1.4 2.5H27" fill="none" stroke="#0b0c0e" stroke-width="2.6" '
