@@ -22,7 +22,7 @@ from app.utils.text import money, status_fa, order_status_fa, split_message, pro
 from app.utils.validation import clean_text, parse_number, parse_int
 from app.utils.photos import MAX_BODY_PHOTOS, append_photo, delete_draft_photos, delete_photo_message, edit_photo_status, normalize_photos, photo_lock, stored_photos
 from app.utils.media import BoundedBuffer, _inspect_upload
-from app.utils.measurements import MEASUREMENTS, required_body_photos
+from app.utils.measurements import required_body_photos
 
 router=Router(); log=logging.getLogger(__name__)
 # PAYMENT_MODE=pending: orders are saved now and paid once the ZarinPal gateway is approved
@@ -312,7 +312,6 @@ PURCHASE_STEPS={
  'complete':['age','gender','height','weight','allergy','restriction','supplements','goal','training_history','notes','body_photo']}
 KEYMAP={'name':'name','phone':'phone','age':'age','gender':'gender','height':'height_cm','weight':'weight_kg','allergy':'allergy','restriction':'restriction','supplements':'supplements','goal':'goal','training_history':'training_history','notes':'notes','body_photo':'body_photo_file_ids','measurements':'measurements'}
 PROFILE_KEYMAP={'allergy':'food_allergy','restriction':'food_restriction'}
-MEASUREMENT_HINT='• اندازه‌های بدنت اگه داری (سانتی‌متر): '+'، '.join(MEASUREMENTS.values())
 
 
 def purchase_route(code: str, data: dict, fields=None) -> list[str]:
@@ -337,11 +336,8 @@ def _step_title(data: dict, step: str) -> str:
 
 
 def notes_prompt(data: dict) -> str:
-    lines=['📝 توضیحات برای مربی (اختیاری)',
-           'هر چیزی که مربی باید بدونه رو آزاد و در یک پیام بنویس؛ لازم نیست همهٔ موارد رو بنویسی.','','مثلاً:']
-    if data.get('measurement_hint'): lines.append(MEASUREMENT_HINT)
-    lines+=['• آسیب‌دیدگی، بیماری یا داروی خاص','• شرایط کار و خواب','• هر نکتهٔ دیگه‌ای که مهمه']
-    return '\n'.join(lines)
+    examples='اندازه‌های بدن (مثل دور کمر و شکم)، آسیب‌دیدگی یا بیماری' if data.get('measurement_hint') else 'آسیب‌دیدگی یا بیماری'
+    return f'📝 توضیحات (اختیاری)\nاگه نکته‌ای هست که مربی باید بدونه بنویس؛ مثل {examples}.'
 
 async def prompt(state, msg, step):
     d=await state.get_data()
