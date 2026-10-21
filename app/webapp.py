@@ -667,7 +667,7 @@ async def dashboard(request: web.Request):
             buyers, users, sales, sales_open = await asyncio.gather(
                 repo.purchaser_count(), repo.user_count(), _sales_snapshot(period), repo.sales_are_open()
             )
-            counts = {"actionable": 0, "receipts": 0, "new_orders": 0, "designing": 0, "needs_info": 0, "unread": 0, "active": buyers}
+            counts = {"actionable": 0, "receipts": 0, "new_orders": 0, "awaiting_form": 0, "designing": 0, "needs_info": 0, "unread": 0, "active": buyers}
         else:
             counts, buyers, users, sales, sales_open = await asyncio.gather(
                 repo.sensi_dashboard_counts(), repo.purchaser_count(), repo.user_count(), _sales_snapshot(period), repo.sales_are_open()
@@ -690,7 +690,7 @@ async def dashboard(request: web.Request):
     if not staff.can(request['actor'], 'customers.read'):
         data['buyers'] = data['users'] = data['counts']['active'] = 0
     if not staff.can(request['actor'], 'orders.read'):
-        for key in ('actionable', 'receipts', 'new_orders', 'designing', 'needs_info'):
+        for key in ('actionable', 'receipts', 'new_orders', 'awaiting_form', 'designing', 'needs_info'):
             data['counts'][key] = 0
     return response(data)
 
@@ -775,6 +775,9 @@ async def order_action(request: web.Request):
         raise web.HTTPNotFound()
     if action in {'in_progress','needs_info'} and repo._json_object(current.get('product_snapshot')).get('delivery_mode','manual')!='manual':
         return response({'error':'automatic_delivery'},409)
+    if action == 'in_progress' and current.get('paid_at') and not current.get('form_completed_at'):
+        # Design starts from the questionnaire the customer still owes after paying.
+        return response({'error':'form_pending'},409)
     request_id=None
     if action == 'needs_info':
         from app.services.client_records import request_information

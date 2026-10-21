@@ -46,7 +46,7 @@ def test_broadcast_body_accepts_maximum_length_persian_message():
 
 def test_ready_product_preserves_multiple_links_in_purchase_snapshot():
     body=dict(title='Video',description='',response_text='Start here',content_url='',content_urls=['https://example.org/a','https://example.org/b'],
-        price_irr=1000,duration_days=30,sort_order=0,duration_unit='days',delivery_mode='content',form_fields=[],questions=[],asset_ids=[],channel_id=None,active=True)
+        price_irr=1500,duration_days=30,sort_order=0,duration_unit='days',delivery_mode='content',form_fields=[],questions=[],asset_ids=[],channel_id=None,active=True)
     product=validate_product(body)
     assert product['content_urls']==body['content_urls']
     assert purchase_terms(product)['content_urls']==body['content_urls']

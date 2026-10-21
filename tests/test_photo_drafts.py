@@ -55,7 +55,7 @@ def test_photo_draft_keeps_the_first_six_and_serializes_a_user():
 
 def test_restart_and_photo_replacement_keep_the_short_flow_recoverable():
     source=(Path(__file__).resolve().parents[1] / 'app/handlers/user.py').read_text(encoding='utf-8')
-    assert "active_steps=list(d.get('active_steps',PURCHASE_STEPS.get(d['product_code'],[])))" in source
+    assert "active_steps=list(d.get('active_steps',PURCHASE_STEPS.get(d.get('product_code'),[])))" in source
     assert "F.text=='↩️ بازگشت به عکس‌های قبلی'" in source
     assert 'async def restore_previous_purchase_photos' in source and 'photo_replacing=True' in source
 
@@ -173,7 +173,7 @@ def test_profile_edits_do_not_change_order_photos():
     user_source=(root / 'app/handlers/user.py').read_text(encoding='utf-8')
     edit_source=(root / 'app/handlers/edit.py').read_text(encoding='utf-8')
     repo_source=(root / 'app/db/repositories.py').read_text(encoding='utf-8')
-    assert 'previous_photos=[]' in user_source
+    assert 'body_photo_file_ids=[],  # Every purchase starts a new dated assessment.' in user_source
     assert "current=normalize_photos((await repo.get_user(tg_id) or {}).get('body_photo_file_ids'))" in edit_source
     assert 'update_body_photos_for_latest_course(m.from_user.id,photos)' not in edit_source
     assert "ORDER BY o.created_at DESC,o.id DESC LIMIT 1" in repo_source
@@ -196,13 +196,14 @@ def test_purchase_summary_has_confirmation_buttons_on_the_summary_message():
     async def scenario():
         bot=FakeBot(); customer_id=800006
         message=FakeMessage(bot,80,customer_id)
-        state=FakeState(product_code='training',product_title='تمرین',name='کاربر',phone='1',age=20,gender='مرد',height_cm=180,weight_kg=80,goal='هدف',training_history='-',notes='',body_photo_file_ids=[],price=1)
+        state=FakeState(order_id=5,product_code='training',product_title='تمرین',configured_fields=['age','gender','height','weight','goal','training_history','notes','body_photo'],name='کاربر',phone='1',age=20,gender='مرد',height_cm=180,weight_kg=80,goal='هدف',training_history='-',notes='',body_photo_file_ids=[])
         with patch('app.handlers.user.customer_menu',AsyncMock(return_value='customer-main')):
             await show_summary(message,state,customer_id)
         assert len(bot.answers) == 2
         assert all('مرحلهٔ عکس‌ها تمام شد' not in text for text,_ in bot.answers)
-        assert bot.answers[0] == ('⏳ در حال پردازش اطلاعات…','customer-main')
-        assert bot.answers[1][0].startswith('📋 بررسی اطلاعات سفارش')
+        assert bot.answers[0] == ('✅ سؤال‌ها تمام شد.','customer-main')
+        assert bot.answers[1][0].startswith('📋 بررسی اطلاعات ثبت‌نام')
+        assert 'نام: کاربر' in bot.answers[1][0] and 'مبلغ' not in bot.answers[1][0]
         callbacks=[button.callback_data for row in bot.answers[1][1].inline_keyboard for button in row]
         assert callbacks == ['confirm','restart_form']
         assert all(text != '\u2063' for text,_ in bot.answers)
@@ -213,4 +214,4 @@ def test_purchase_summary_has_confirmation_buttons_on_the_summary_message():
 
 def test_returning_customer_refreshes_notes_in_the_five_step_purchase_flow():
     profile={'name':'کاربر','phone':'1','age':20,'gender':'مرد','height_cm':180,'weight_kg':80,'goal':'هدف','training_history':'سابقه','notes':'قدیمی'}
-    assert purchase_route('training',profile) == ['age','height','weight','measurements','notes','body_photo']
+    assert purchase_route('training',profile) == ['age','height','weight','notes','body_photo']

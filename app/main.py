@@ -1,5 +1,6 @@
 import asyncio, logging
 import hashlib
+from html import escape
 from aiohttp import web
 from app.services.payment import payment
 from app.db import repositories as repo
@@ -59,25 +60,67 @@ async def zarinpal_callback(request):
         return web.Response(text='بررسی پرداخت زمان برد؛ کمی بعد دوباره تلاش کنید.',status=503,headers={'Retry-After':'20'})
 
 
+def _result_page(ok: bool, title: str, detail: str, start: str = '', status: int = 200, headers=None):
+    """What the customer sees in the browser after the gateway; the bot link resumes the right step."""
+    link=f'https://t.me/{settings.bot_username}' + (f'?start={start}' if start else '')
+    color='#15803d' if ok else '#b91c1c'
+    page=(f'<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8">'
+          f'<meta name="viewport" content="width=device-width,initial-scale=1"><title>{title}</title></head>'
+          f'<body style="font-family:Tahoma,sans-serif;background:#f6f7f9;margin:0;display:grid;place-items:center;min-height:100vh">'
+          f'<main style="background:#fff;border-radius:16px;padding:32px 24px;max-width:420px;margin:16px;text-align:center;box-shadow:0 2px 12px #0001">'
+          f'<h1 style="color:{color};font-size:22px">{title}</h1><p style="line-height:1.9;color:#333">{detail}</p>'
+          f'<a href="{link}" style="display:inline-block;margin-top:12px;background:#229ED9;color:#fff;padding:12px 24px;border-radius:12px;text-decoration:none">بازگشت به ربات</a>'
+          '</main></body></html>')
+    return web.Response(text=page,content_type='text/html',status=status,headers=headers)
+
+
+_notices=set()
+
+
+def _notify_payment_failed(order, authority):
+    """Tell the customer once per gateway attempt, off the callback's time budget; a failed attempt never changes the order."""
+    if order.get('status')!='awaiting_payment' or not order.get('telegram_id'):
+        return
+    task=asyncio.create_task(_send_payment_failed(order,authority))
+    _notices.add(task); task.add_done_callback(_notices.discard)
+
+
+async def _send_payment_failed(order, authority):
+    try:
+        from app.keyboards import payment_failed_kb
+        from app.services.fulfillment import send_message_once
+        key='failed:'+hashlib.sha256(authority.encode()).hexdigest()[:24]
+        await send_message_once(bot,order,key,
+            '❌ پرداخت ناموفق بود.\n\nاگر مبلغی از حسابت کم شده، طبق قوانین بانکی حداکثر تا ۷۲ ساعت بعد به حسابت برمی‌گردد. '
+            'سفارشت محفوظ است و می‌تونی دوباره پرداخت کنی.',reply_markup=payment_failed_kb(order['id']))
+    except Exception:
+        logging.getLogger(__name__).warning('Could not send payment failure notice',exc_info=True)
+
+
 async def _verify_payment_callback(authority, status):
     order=await repo.get_order_by_authority(authority)
-    if not order: return web.Response(text='سفارش پیدا نشد.',status=404)
+    if not order: return _result_page(False,'سفارش پیدا نشد','اطلاعات این پرداخت در سامانه پیدا نشد.',status=404)
+    form=f"form_{order['id']}"
     if order.get('payment_status')=='paid' or order.get('paid_at'):
-        return web.Response(text='پرداخت قبلاً تأیید شده است. می‌توانید به ربات برگردید.')
+        return _result_page(True,'پرداخت قبلاً تأیید شده است','برای ادامهٔ ثبت‌نام به ربات برگرد.',form)
     if status.upper()!='OK':
         # A browser return is not proof of cancellation. Never persist attacker-controlled replays.
-        return web.Response(text='پرداخت لغو شد. می‌توانید به ربات برگردید.')
+        _notify_payment_failed(order,authority)
+        return _result_page(False,'پرداخت ناموفق بود','پرداخت انجام نشد. اگر مبلغی کم شده، تا ۷۲ ساعت بعد برمی‌گردد. از ربات می‌توانی دوباره پرداخت کنی.',f"pay_{order['id']}")
     try:
         result=await payment.verify_zarinpal(authority,int(order['amount']))
     except Exception:
         logging.getLogger(__name__).exception('Zarinpal verify failed')
-        return web.Response(text='خطا در بررسی پرداخت. لطفاً بعداً از ربات وضعیت سفارش را بررسی کنید.',status=502)
-    if not result.success: return web.Response(text='پرداخت توسط درگاه تأیید نشد.',status=400)
+        return _result_page(False,'بررسی پرداخت انجام نشد','لطفاً چند دقیقه بعد وضعیت سفارش را از ربات بررسی کنید.',f"order_{order['id']}",status=502)
+    if not result.success:
+        _notify_payment_failed(order,authority)
+        return _result_page(False,'پرداخت ناموفق بود','پرداخت توسط درگاه تأیید نشد. اگر مبلغی کم شده، تا ۷۲ ساعت بعد برمی‌گردد. از ربات می‌توانی دوباره پرداخت کنی.',f"pay_{order['id']}",status=400)
     paid=await repo.mark_zarinpal_paid(order['id'],result.reference_id or authority)
     if paid:
         await repo.add_audit(order['telegram_id'],'zarinpal_paid','order',order['id'],{'reference_id':result.reference_id})
         # The durable fulfillment worker sends the configured response, including on retries.
-    return web.Response(text='پرداخت با موفقیت تأیید شد. می‌توانید به ربات برگردید.')
+    return _result_page(True,'پرداخت با موفقیت انجام شد',
+        f"کد پیگیری: {escape(str(result.reference_id or '-'))}<br>برای تکمیل فرم ثبت‌نام به ربات برگرد.",form)
 
 async def _stop_task(task):
     task.cancel()
@@ -89,7 +132,6 @@ async def _stop_task(task):
 
 async def run_polling(dp, redis, background_tasks):
     try:
-        await prepare_polling()
         await dp.start_polling(
             bot,
             allowed_updates=dp.resolve_used_update_types(),
@@ -105,6 +147,11 @@ async def prepare_polling():
     delay=5
     while True:
         try:
+            info=await bot.get_webhook_info()
+            if info.url and not settings.allow_webhook_takeover:
+                # deleteWebhook here would silently cut the live bot off from Telegram.
+                raise RuntimeError('This BOT_TOKEN has a live webhook, so it is the production bot. '
+                                   'Put a separate test bot token in the local .env (see docs/LOCAL_DEV.md).')
             await bot.delete_webhook(drop_pending_updates=False)
             await bot.me()
             return
@@ -141,6 +188,10 @@ async def main():
     await db.connect()
     redis=Redis.from_url(settings.redis_url, encoding='utf-8', decode_responses=True)
     await redis.ping()
+    production=settings.app_env.lower() == 'production'
+    if not production:
+        # Before anything touches the bot, so a production token is refused untouched.
+        await prepare_polling()
     try:
         await bot.set_my_commands([
             BotCommand(command='start',description='شروع و نمایش پنل'),
@@ -152,7 +203,7 @@ async def main():
     dp=await build_dispatcher(redis)
     from app.services.client_archive import run_client_archive_loop
     background_tasks=asyncio.gather(run_fulfillment_loop(bot),run_telemetry_loop('bot'),run_client_archive_loop(bot))
-    if settings.app_env.lower() == 'production':
+    if production:
         await run_webhook(dp,redis,background_tasks)
     else:
         await run_polling(dp,redis,background_tasks)

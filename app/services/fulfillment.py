@@ -16,7 +16,7 @@ from app.services.content import asset_path, content_link
 from app.services.deliveries import process_manual_deliveries
 from app.services.broadcasts import process_broadcasts
 from app.utils.media import message_file
-from app.keyboards import customer_main_reply_kb
+from app.keyboards import customer_main_reply_kb, order_form_kb
 
 log=logging.getLogger(__name__)
 router=Router(name='paid_channels')
@@ -59,7 +59,13 @@ async def fulfill_order(bot,order_id):
         if not row: return
         terms=object_value(row['product_snapshot'])
         mode=terms.get('delivery_mode','manual')
-        text=terms.get('response_text') or ('✅ پرداخت تأیید شد. اطلاعات شما در صف بررسی مربی قرار گرفت؛ پس از آماده شدن، برنامه برایتان ارسال می‌شود.' if mode=='manual' else '✅ خرید شما تأیید شد. محتوای دوره در دسترس شماست.')
+        form_pending=row['form_completed_at'] is None
+        if mode=='manual' and form_pending:
+            # The configured response is sent once the questionnaire is submitted.
+            text=('✅ پرداخت با موفقیت انجام شد.'+(f"\nکد پیگیری: {row['gateway_ref']}" if row['payment_method']=='zarinpal' and row['gateway_ref'] else '')+
+                  '\n\nقدم آخر: فرم ثبت‌نام رو کامل کن تا مربی طراحی برنامه‌ات رو شروع کنه. چند دقیقه بیشتر طول نمی‌کشه.')
+        else:
+            text=terms.get('response_text') or ('✅ پرداخت تأیید شد. اطلاعات شما در صف بررسی مربی قرار گرفت؛ پس از آماده شدن، برنامه برایتان ارسال می‌شود.' if mode=='manual' else '✅ خرید شما تأیید شد. محتوای دوره در دسترس شماست.')
         file_id=None; filename=None
         if mode=='channel':
             chat_id=int(terms['channel_id'])
@@ -80,7 +86,9 @@ async def fulfill_order(bot,order_id):
                 JOIN product_assets a ON a.id=d.asset_id WHERE d.order_id=$1 AND d.file_id IS NOT NULL
                 ORDER BY d.delivered_at LIMIT 1''',order_id)
             if first: file_id,filename=first['file_id'],first['filename']
-        await send_message_once(bot,row,'payment',text,reply_markup=customer_main_reply_kb(True))
+        await send_message_once(bot,row,'payment',text,reply_markup=order_form_kb(order_id) if mode=='manual' and form_pending else customer_main_reply_kb(True))
+        if form_pending and mode!='manual':
+            await send_message_once(bot,row,'form','📝 برای تکمیل ثبت‌نام این دوره، فرم کوتاه آن را پر کن.',reply_markup=order_form_kb(order_id))
         await c.execute('''UPDATE orders SET fulfillment_done=true,fulfillment_error=NULL,
             status=CASE WHEN $2='manual' THEN status ELSE 'delivered' END,
             delivered_at=CASE WHEN $2='manual' THEN delivered_at ELSE COALESCE(delivered_at,NOW()) END,

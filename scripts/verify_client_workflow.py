@@ -58,14 +58,38 @@ async def main():
             photos=[{'file_id':f'old-{i}','type':'photo'} for i in range(4)]
             from app.utils.measurements import MEASUREMENTS
             snapshot={'gender':'مرد','measurements':{key:90 for key in MEASUREMENTS},'body_photo_file_ids':photos,'notes':'original'}
-            try: await repo.create_order(tg.id,product,{**snapshot,'body_photo_file_ids':[]},'zarinpal')
-            except ValueError: pass
-            else: raise AssertionError('Body assessment accepted missing photos')
-            order=await repo.create_order(tg.id,product,snapshot,'zarinpal'); oid=order['id']; uid=order['user_id']
+            # Checkout saves only contact details; the questionnaire opens after a verified payment.
+            contact={'name':'Workflow client','phone':'09120000000'}
+            order=await repo.create_order(tg.id,product,contact,'zarinpal'); oid=order['id']; uid=order['user_id']
+            assert order['form_completed_at'] is None
+            try: await repo.complete_order_form(oid,tg.id,snapshot)
+            except ValueError as exc: assert str(exc)=='order not paid'
+            else: raise AssertionError('Questionnaire accepted before payment')
             assert not await repo.has_course_access(tg.id)
             await repo.mark_zarinpal_paid(oid,'workflow-reference')
             assert await repo.has_course_access(tg.id)
             assert await repo.mark_zarinpal_paid(oid,'workflow-reference') is None
+            from app.services.fulfillment import fulfill_order
+            sent=AsyncMock()
+            await fulfill_order(SimpleNamespace(send_message=sent),oid)
+            assert sent.await_args.kwargs['reply_markup'].inline_keyboard[0][0].callback_data==f'form:{oid}'
+            assert (await repo.get_order(oid))['status']=='paid'
+            try: await repo.complete_order_form(oid,tg.id,{**snapshot,'body_photo_file_ids':[]})
+            except ValueError: pass
+            else: raise AssertionError('Body assessment accepted missing photos')
+            try: await repo.complete_order_form(oid,tg.id+1,snapshot)
+            except ValueError as exc: assert str(exc)=='order not found'
+            else: raise AssertionError('Questionnaire accepted for another customer')
+            completed=await repo.complete_order_form(oid,tg.id,snapshot)
+            assert completed['form_completed_at'] is not None
+            assert json.loads(completed['form_snapshot'])['name']=='Workflow client'
+            try: await repo.complete_order_form(oid,tg.id,snapshot)
+            except ValueError as exc: assert str(exc)=='form already completed'
+            else: raise AssertionError('Questionnaire submitted twice')
+            async with db.acquire() as c:
+                # The first submission is the order's original record, not a correction.
+                assert await c.fetchval('SELECT COUNT(*) FROM record_revisions WHERE order_id=$1',oid)==0
+                assert await c.fetchval('SELECT COUNT(*) FROM user_profile_history WHERE order_id=$1',oid)==1
             try: await repo.create_order(tg.id,product,snapshot,'card_to_card')
             except ValueError: pass
             else: raise AssertionError('Retired payment accepted')
@@ -118,7 +142,9 @@ async def main():
                 assert await c.fetchval('SELECT COUNT(*) FROM support_messages WHERE user_id=$1 AND message_id=99',uid)==1
                 # Prepare a renewable first course, then create a separate second photo set.
                 await c.execute("UPDATE orders SET status='delivered',delivered_at=NOW()-INTERVAL '31 days' WHERE id=$1",oid)
-            second=await repo.create_order(tg.id,product,{**snapshot,'body_photo_file_ids':[{'file_id':f'new-{i}'} for i in range(4)]},'zarinpal',oid)
+            second=await repo.create_order(tg.id,product,contact,'zarinpal',oid)
+            await repo.mark_zarinpal_paid(second['id'],'workflow-renewal')
+            second=await repo.complete_order_form(second['id'],tg.id,{**snapshot,'body_photo_file_ids':[{'file_id':f'new-{i}'} for i in range(4)]})
             assert json.loads((await repo.get_order(oid))['form_snapshot'])['body_photo_file_ids']==photos
             assert json.loads(second['form_snapshot'])['body_photo_file_ids'][0]['file_id']=='new-0'
             for _ in range(20): await client_archive.index_existing()

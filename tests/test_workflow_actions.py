@@ -125,3 +125,36 @@ def test_zarinpal_callback_verifies_before_routing_to_information_review(monkeyp
     verify.reset_mock()
     assert asyncio.run(main.zarinpal_callback(request)).status == 200
     verify.assert_not_awaited()
+
+
+def test_design_waits_for_the_questionnaire_paid_customers_still_owe(repo):
+    repo["get_order"].return_value = {"id":42, "telegram_id":999, "status":"paid", "payment_method":"zarinpal", "payment_status":"paid", "paid_at":"2026-10-21", "form_completed_at":None}
+    result = asyncio.run(webapp.order_action(Request({"action":"in_progress"})))
+    assert result.status == 409 and json.loads(result.text)["error"] == "form_pending"
+    repo["update_order_status"].assert_not_awaited()
+
+
+@pytest.mark.parametrize("status,verified,notified", [("NOK", None, True), ("OK", False, True), ("OK", True, False)])
+def test_failed_gateway_return_notifies_customer_without_touching_the_order(monkeypatch, status, verified, notified):
+    from app import main
+    from app.services import fulfillment
+    order = {"id":42, "telegram_id":999, "amount":499000, "status":"awaiting_payment", "payment_status":"pending"}
+    monkeypatch.setattr(main.repo, "get_order_by_authority", AsyncMock(return_value=order))
+    monkeypatch.setattr(main.payment, "verify_zarinpal", AsyncMock(return_value=SimpleNamespace(success=verified, reference_id="R1")))
+    mark = AsyncMock(return_value={"id":42}); monkeypatch.setattr(main.repo, "mark_zarinpal_paid", mark)
+    monkeypatch.setattr(main.repo, "add_audit", AsyncMock())
+    send = AsyncMock(); monkeypatch.setattr(fulfillment, "send_message_once", send)
+    async def run():
+        response = await main._verify_payment_callback("auth-1", status)
+        await asyncio.sleep(0)
+        return response
+    response = asyncio.run(run())
+    assert ("بازگشت به ربات" in response.text) and (("start=pay_42" in response.text) is notified)
+    assert send.await_count == int(notified)
+    if notified:
+        assert "پرداخت ناموفق بود" in send.await_args.args[3]
+        assert [b.callback_data for row in send.await_args.kwargs["reply_markup"].inline_keyboard for b in row] == ["order:pay:42", "order:cancel:42"]
+        mark.assert_not_awaited()
+    else:
+        assert "start=form_42" in response.text
+        mark.assert_awaited_once_with(42, "R1")

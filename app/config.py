@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     web_session_hours: int = Field(default=12, ge=1, le=72)
     # Enable only behind our isolated ingress, which overwrites X-Coach-Client-IP.
     web_trust_ingress: bool = False
+    # Local polling refuses a token whose bot already has a webhook (that is production's bot).
+    allow_webhook_takeover: bool = False
     model_config = SettingsConfigDict(env_file=('.env', '.env.live'), env_file_encoding='utf-8', extra='ignore')
 
     @property
@@ -76,6 +78,11 @@ class Settings(BaseSettings):
     def payment_pending(self) -> bool:
         """Orders are taken but paid later, once the gateway is approved (PAYMENT_MODE=pending)."""
         return self.payment_mode == 'pending'
+
+    @property
+    def zarinpal_sandbox(self) -> bool:
+        """Only production talks to the real gateway; everything else uses ZarinPal's sandbox."""
+        return self.app_env.lower() != 'production'
 
     @property
     def resolved_zarinpal_callback(self):

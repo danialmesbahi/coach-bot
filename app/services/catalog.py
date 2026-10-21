@@ -21,7 +21,8 @@ def validate_product(body):
         result[key]=value.strip()
     if not result['title']:
         raise ValueError('title')
-    for key,low,high in (('price_irr',1000,1_000_000_000),('duration_days',-1,36500),('sort_order',0,32767)):
+    # ZarinPal rejects amounts under 15,000 rial (code -9); prices are stored in Toman.
+    for key,low,high in (('price_irr',1500,1_000_000_000),('duration_days',-1,36500),('sort_order',0,32767)):
         value=body.get(key,0)
         if type(value) is not int or not low<=value<=high:
             raise ValueError(key)

@@ -20,7 +20,7 @@ def test_catalog_boundary_and_configurable_questionnaire():
     assert purchase_route('new_course',{},[])==[]
     assert not can({'role':'staff','permissions':['catalog.manage']},'catalog.manage')
     assert can({'role':'leader'},'catalog.manage')
-    for bad in ({'duration_days':0},{'duration_days':True},{'price_irr':-1},{'content_url':'javascript:alert(1)'},
+    for bad in ({'duration_days':0},{'duration_days':True},{'price_irr':-1},{'price_irr':1499},{'content_url':'javascript:alert(1)'},
                 {'delivery_mode':'channel'},{'delivery_mode':'content'},{'form_fields':['password']},{'questions':['x'*201]}):
         data=product();data.update(bad)
         with pytest.raises(ValueError): validate_product(data)

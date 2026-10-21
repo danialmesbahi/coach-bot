@@ -48,9 +48,9 @@ def test_three_plan_catalog_exposes_only_the_valid_next_action():
 def test_history_pages_edit_in_place_and_fsm_price_is_json_safe():
     user=(ROOT/'app/handlers/user.py').read_text(encoding='utf-8')
     history=user.split('async def show_profile_history',1)[1].split("@router.callback_query(F.data=='profile')",1)[0]
-    purchase=user.split('async def begin_purchase',1)[1].split("@router.callback_query(F.data=='renew:list')",1)[0]
+    purchase=user.split('def _stored_profile',1)[1].split('async def begin_purchase',1)[0]
     assert "profile_history_page_kb(page,total_pages,include_back=not from_link)" in history
-    assert "price=int(p['price_irr'])" in purchase
+    assert "'age': _fsm_value(user.get('age'))" in purchase
 
 
 def test_weight_progress_ignores_old_invalid_snapshots():
