@@ -114,7 +114,7 @@ async def payment_redirect(request):
             steps=pay_pages.VPN_STEPS,action=('خاموش کردم، تلاش دوباره',f'/pay/{authority}'),
             alt=('فیلترشکن ندارم، ادامه پرداخت',f'/pay/{authority}?vpn=off'))
     else:
-        page=pay_pages.handoff(target,rows,_bot_link(f"pay_{order['id']}"))
+        page=pay_pages.handoff(target,rows,_bot_link())
     # The navigation from this page carries our origin as the referrer ZarinPal checks.
     return web.Response(text=page,content_type='text/html',headers={'Referrer-Policy':'origin','Cache-Control':'no-store'})
 
@@ -158,8 +158,8 @@ async def _verify_payment_callback(authority, status):
     if status.upper()!='OK':
         # A browser return is not proof of cancellation. Never persist attacker-controlled replays.
         _notify_payment_failed(order,authority)
-        return _result_page(False,'پرداخت ناموفق بود','پرداخت انجام نشد یا لغو شد. سفارشت محفوظ است و از ربات می‌توانی دوباره پرداخت کنی.',f"pay_{order['id']}",
-            rows=_order_rows(order),note=_REFUND_NOTE,label='بازگشت به ربات و پرداخت دوباره')
+        return _result_page(False,'پرداخت ناموفق بود','پرداخت انجام نشد یا لغو شد. سفارشت محفوظ است و از ربات می‌توانی دوباره پرداخت کنی.',
+            rows=_order_rows(order),note=_REFUND_NOTE,label='بازگشت به ربات')
     try:
         result=await payment.verify_zarinpal(authority,int(order['amount']))
     except Exception:
@@ -167,8 +167,8 @@ async def _verify_payment_callback(authority, status):
         return _result_page(False,'بررسی پرداخت انجام نشد','لطفاً چند دقیقه بعد وضعیت سفارش را از ربات بررسی کنید.',f"order_{order['id']}",status=502,tone='info')
     if not result.success:
         _notify_payment_failed(order,authority)
-        return _result_page(False,'پرداخت ناموفق بود','درگاه این پرداخت را تأیید نکرد. سفارشت محفوظ است و از ربات می‌توانی دوباره پرداخت کنی.',f"pay_{order['id']}",status=400,
-            rows=_order_rows(order),note=_REFUND_NOTE,label='بازگشت به ربات و پرداخت دوباره')
+        return _result_page(False,'پرداخت ناموفق بود','درگاه این پرداخت را تأیید نکرد. سفارشت محفوظ است و از ربات می‌توانی دوباره پرداخت کنی.',status=400,
+            rows=_order_rows(order),note=_REFUND_NOTE,label='بازگشت به ربات')
     paid=await repo.mark_zarinpal_paid(order['id'],result.reference_id or authority)
     if paid:
         await repo.add_audit(order['telegram_id'],'zarinpal_paid','order',order['id'],{'reference_id':result.reference_id})

@@ -149,7 +149,9 @@ def test_failed_gateway_return_notifies_customer_without_touching_the_order(monk
         await asyncio.sleep(0)
         return response
     response = asyncio.run(run())
-    assert ("بازگشت به ربات" in response.text) and (("start=pay_42" in response.text) is notified)
+    assert "بازگشت به ربات" in response.text
+    # The bot already sent the failure notice with its own retry button; the page must not trigger a second payment message.
+    assert "start=pay_42" not in response.text
     assert send.await_count == int(notified)
     if notified:
         assert "پرداخت ناموفق بود" in send.await_args.args[3]
