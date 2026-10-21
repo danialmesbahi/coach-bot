@@ -29,7 +29,7 @@ def test_standard_customer_navigation_and_photo_limit_regression():
     assert 'https://t.me/{bot_username}?start=' in source
     assert 'async def _finish_deep_link' in source and 'await m.delete()' in source
     assert 'show_order_detail_message(m,m.from_user.id,oid,from_link=True)' in source
-    assert 'if from_link or active_course:\n        markup=plan_download_kb(oid)' in source
+    assert 'elif from_link or active_course:\n        markup=plan_download_kb(oid)' in source
     assert "F.data.startswith('history_photos:')" not in source and "F.data.startswith('course:')" not in source
     repository=(ROOT/'app/db/repositories.py').read_text(encoding='utf-8')
     ownership=repository[repository.index('async def get_user_order'):repository.index('async def get_user_orders')]
