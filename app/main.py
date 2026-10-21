@@ -1,5 +1,5 @@
 import asyncio, logging
-import hashlib
+import hashlib, json, re
 from html import escape
 from aiohttp import web
 from app.services.payment import payment
@@ -17,6 +17,7 @@ from app.handlers.edit import router as edit_router
 from app.middlewares.security import RateLimitMiddleware
 from app.services.fulfillment import router as channel_router, run_fulfillment_loop
 from app.services.telemetry import BotMetrics, run_telemetry_loop, record
+from app.utils.text import money
 
 settings=get_settings(); bot=Bot(settings.bot_token)
 
@@ -72,6 +73,39 @@ def _result_page(ok: bool, title: str, detail: str, start: str = '', status: int
           f'<a href="{link}" style="display:inline-block;margin-top:12px;background:#229ED9;color:#fff;padding:12px 24px;border-radius:12px;text-decoration:none">بازگشت به ربات</a>'
           '</main></body></html>')
     return web.Response(text=page,content_type='text/html',status=status,headers=headers)
+
+
+_AUTHORITY=re.compile(r'[A-Za-z0-9_-]{8,128}')
+
+
+async def payment_redirect(request):
+    """Hand the browser to ZarinPal from our own domain; the gateway rejects visitors referred from elsewhere."""
+    authority=request.match_info.get('authority','')
+    if not _AUTHORITY.fullmatch(authority):
+        return _result_page(False,'لینک پرداخت نامعتبر است','از ربات دوباره «💳 ادامه پرداخت» را بزن.',status=404)
+    try:
+        order=await repo.get_order_by_authority(authority)
+    except Exception:
+        logging.getLogger(__name__).exception('Payment hand-off lookup failed')
+        return _result_page(False,'درگاه موقتاً در دسترس نیست','چند لحظه بعد دوباره همین لینک را باز کن.',status=503,headers={'Retry-After':'20'})
+    if not order:
+        return _result_page(False,'لینک پرداخت پیدا نشد','از ربات دوباره «💳 ادامه پرداخت» را بزن.',status=404)
+    if order.get('payment_status')=='paid' or order.get('paid_at'):
+        return _result_page(True,'پرداخت قبلاً تأیید شده است','برای ادامه ثبت‌نام به ربات برگرد.',f"form_{order['id']}")
+    if order.get('status')!='awaiting_payment' or order.get('payment_authority')!=authority:
+        # Every new attempt replaces the authority, so an older link can never be paid twice.
+        return _result_page(False,'این لینک پرداخت منقضی شده است','از ربات دوباره «💳 ادامه پرداخت» را بزن تا لینک تازه ساخته شود.',f"pay_{order['id']}",status=410)
+    target=payment.start_url(authority)
+    page=('<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8">'
+          '<meta name="viewport" content="width=device-width,initial-scale=1"><title>انتقال به درگاه پرداخت</title></head>'
+          '<body style="font-family:Tahoma,sans-serif;background:#f6f7f9;margin:0;display:grid;place-items:center;min-height:100vh">'
+          '<main style="background:#fff;border-radius:16px;padding:32px 24px;max-width:420px;margin:16px;text-align:center;box-shadow:0 2px 12px #0001">'
+          f'<h1 style="font-size:20px;color:#14213d">در حال انتقال به درگاه پرداخت…</h1>'
+          f'<p style="line-height:1.9;color:#333">مبلغ: {money(order["amount"])}<br>اگر چند ثانیه بعد منتقل نشدی، دکمه زیر را بزن.</p>'
+          f'<a href="{escape(target,quote=True)}" style="display:inline-block;margin-top:12px;background:#15803d;color:#fff;padding:12px 24px;border-radius:12px;text-decoration:none">ورود به درگاه زرین‌پال</a>'
+          f'</main><script>location.replace({json.dumps(target)})</script></body></html>')
+    # The navigation from this page carries our origin as the referrer ZarinPal checks.
+    return web.Response(text=page,content_type='text/html',headers={'Referrer-Policy':'origin','Cache-Control':'no-store'})
 
 
 _notices=set()
@@ -168,6 +202,7 @@ async def run_webhook(dp, redis, background_tasks):
     app['redis']=redis
     app['payment_slots']=asyncio.Semaphore(4)
     app.router.add_get('/payment/zarinpal/callback', zarinpal_callback)
+    app.router.add_get('/pay/{authority}', payment_redirect)
     SimpleRequestHandler(dispatcher=dp, bot=bot, secret_token=settings.webhook_secret, handle_in_background=False).register(app, path=path)
     setup_application(app, dp, bot=bot)
     runner=web.AppRunner(app, access_log=None)
