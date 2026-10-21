@@ -59,3 +59,14 @@ def test_handoff_rejects_malformed_or_unknown_links(monkeypatch):
     assert asyncio.run(main.payment_redirect(_request('<script>'))).status == 404
     lookup.assert_not_awaited()
     assert asyncio.run(main.payment_redirect(_request('A000000000000000000000000000000abcde'))).status == 404
+
+
+def test_payment_pages_share_one_branded_design_and_font():
+    from app import main
+    from app.services import pay_pages
+    assert pay_pages.FONT.is_file() and pay_pages.FONT_URL.startswith('/pay/')  # Routed to the bot by nginx.
+    response = asyncio.run(main.payment_font(None))
+    assert response.headers['Cache-Control'].endswith('immutable')
+    page = main._result_page(True, 'پرداخت با موفقیت انجام شد', 'ok', 'form_42', rows=(('کد پیگیری', '<b>1</b>'),)).text
+    assert pay_pages.FONT_URL in page and 'سنسی' in page and 'start=form_42' in page
+    assert '&lt;b&gt;1&lt;/b&gt;' in page and 'هٔ' not in page
