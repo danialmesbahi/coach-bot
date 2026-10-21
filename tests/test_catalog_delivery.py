@@ -14,7 +14,7 @@ from app.services.diagnostics import DiagnosticFormat
 
 
 def product(**extra):
-    return dict(title='Course',description='',price_irr=1000,duration_days=30,
+    return dict(title='Course',description='',price_irr=1500,duration_days=30,
         duration_unit='days',sort_order=0,delivery_mode='content',form_fields=[],questions=[],
         response_text='Welcome',content_url='',asset_id=None,channel_id=None,active=True,**extra)
 
