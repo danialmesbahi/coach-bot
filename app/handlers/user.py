@@ -8,10 +8,10 @@ from aiogram import Router, F
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart, CommandObject
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove, CopyTextButton, InlineKeyboardButton, InlineKeyboardMarkup, FSInputFile
+from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove, InlineKeyboardButton, FSInputFile
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.utils.media_group import MediaGroupBuilder
-from app.keyboards import main_reply_kb, customer_main_reply_kb, products_kb, phone_kb, choice_reply_kb, skip_reply_kb, back_reply_kb, back_kb, confirm_kb, payment_methods_kb, pending_order_kb, rejected_receipt_kb, cancel_confirm_kb, profile_kb, profile_history_kb, profile_history_page_kb, customer_compose_kb, orders_list_kb, purchase_entry_kb, renewal_list_kb, renewal_order_kb, plan_download_kb, previous_value_kb, body_photo_kb, support_contact_kb
+from app.keyboards import main_reply_kb, customer_main_reply_kb, products_kb, phone_kb, choice_reply_kb, skip_reply_kb, back_reply_kb, back_kb, confirm_kb, checkout_kb, order_form_kb, pending_order_kb, rejected_receipt_kb, cancel_confirm_kb, profile_kb, profile_history_kb, profile_history_page_kb, customer_compose_kb, orders_list_kb, purchase_entry_kb, renewal_list_kb, renewal_order_kb, plan_download_kb, previous_value_kb, body_photo_kb, support_contact_kb
 from app.states.forms import PurchaseForm, SupportForm, CancelOrder, CustomerInfoForm
 from app.db import repositories as repo
 from app.services.payment import payment
@@ -22,7 +22,7 @@ from app.utils.text import money, status_fa, order_status_fa, split_message, pro
 from app.utils.validation import clean_text, parse_number, parse_int
 from app.utils.photos import MAX_BODY_PHOTOS, append_photo, delete_draft_photos, delete_photo_message, edit_photo_status, normalize_photos, photo_lock, stored_photos
 from app.utils.media import BoundedBuffer, _inspect_upload
-from app.utils.measurements import MEASUREMENTS, parse_measurements, validate_measurements, measurements_text, required_body_photos
+from app.utils.measurements import MEASUREMENTS, required_body_photos
 
 router=Router(); log=logging.getLogger(__name__)
 # PAYMENT_MODE=pending: orders are saved now and paid once the ZarinPal gateway is approved
@@ -185,6 +185,10 @@ async def start(m:Message,state:FSMContext,command:CommandObject):
         try: oid=int(arg.removeprefix('pay_'))
         except ValueError: return await _finish_deep_link(m,home_message(m))
         return await _finish_deep_link(m,start_pending_payment(m,state,m.from_user.id,oid))
+    if is_customer(m.from_user.id) and arg.startswith('form_'):
+        try: oid=int(arg.removeprefix('form_'))
+        except ValueError: return await _finish_deep_link(m,home_message(m))
+        return await _finish_deep_link(m,start_order_form(m,state,m.from_user,oid))
     if is_customer(m.from_user.id) and arg.startswith('cancel_'):
         try: oid=int(arg.removeprefix('cancel_'))
         except ValueError: return await _finish_deep_link(m,home_message(m))
@@ -300,33 +304,50 @@ async def subscription_status(c: CallbackQuery):
     if not is_customer(c.from_user.id): return await c.answer('دسترسی ندارید.',show_alert=True)
     await c.answer('برای این پلن فعلاً اقدام تازه‌ای لازم نیست؛ وضعیت و زمان باقی‌مانده روی همین دکمه نوشته شده است.',show_alert=True)
 
+# Checkout asks only for contact details; the questionnaire opens after a verified payment.
+CONTACT_STEPS=('name','phone')
 PURCHASE_STEPS={
- 'nutrition':['name','phone','age','gender','height','weight','allergy','restriction','supplements','notes','body_photo'],
- 'training':['name','phone','age','gender','height','weight','goal','training_history','notes','body_photo'],
- 'complete':['name','phone','age','gender','height','weight','allergy','restriction','supplements','goal','training_history','notes','body_photo']}
-KEYMAP={'name':'name','phone':'phone','age':'age','gender':'gender','height':'height_cm','weight':'weight_kg','allergy':'allergy','restriction':'restriction','supplements':'supplements','goal':'goal','training_history':'training_history','notes':'notes','body_photo':'body_photo_file_ids'}
+ 'nutrition':['age','gender','height','weight','allergy','restriction','supplements','notes','body_photo'],
+ 'training':['age','gender','height','weight','goal','training_history','notes','body_photo'],
+ 'complete':['age','gender','height','weight','allergy','restriction','supplements','goal','training_history','notes','body_photo']}
+KEYMAP={'name':'name','phone':'phone','age':'age','gender':'gender','height':'height_cm','weight':'weight_kg','allergy':'allergy','restriction':'restriction','supplements':'supplements','goal':'goal','training_history':'training_history','notes':'notes','body_photo':'body_photo_file_ids','measurements':'measurements'}
 PROFILE_KEYMAP={'allergy':'food_allergy','restriction':'food_restriction'}
-KEYMAP['measurements']='measurements'
-for _steps in PURCHASE_STEPS.values():
-    _steps.insert(_steps.index('weight')+1,'measurements')
+MEASUREMENT_HINT='• اندازه‌های بدنت اگه داری (سانتی‌متر): '+'، '.join(MEASUREMENTS.values())
 
 
 def purchase_route(code: str, data: dict, fields=None) -> list[str]:
-    refresh={'age','height','weight','measurements','notes','body_photo'}
+    refresh={'age','height','weight','notes','body_photo'}
     from app.services.catalog import FIELDS
     sequence=[step for step in FIELDS if step in fields] if fields is not None else PURCHASE_STEPS.get(code,[])
+    sequence=[step for step in sequence if step not in CONTACT_STEPS]
+    if 'measurements' in sequence:
+        # Measurements are optional free text inside the notes step, never a separate template to fill.
+        sequence=[step for step in sequence if step!='measurements'] if 'notes' in sequence else ['notes' if step=='measurements' else step for step in sequence]
     return [step for step in sequence if step in refresh or not data.get(KEYMAP[step])]
 
 
+def contact_route(data: dict) -> list[str]:
+    return [step for step in CONTACT_STEPS if not data.get(step)]
+
+
 def _step_title(data: dict, step: str) -> str:
-    steps=data.get('active_steps',PURCHASE_STEPS.get(data['product_code'],[]))
+    steps=data.get('active_steps',PURCHASE_STEPS.get(data.get('product_code'),[]))
+    if step not in steps: return ''
     return f'▫️ مرحله {steps.index(step)+1} از {len(steps)}\n'
+
+
+def notes_prompt(data: dict) -> str:
+    lines=['📝 توضیحات برای مربی (اختیاری)',
+           'هر چیزی که مربی باید بدونه رو آزاد و در یک پیام بنویس؛ لازم نیست همهٔ موارد رو بنویسی.','','مثلاً:']
+    if data.get('measurement_hint'): lines.append(MEASUREMENT_HINT)
+    lines+=['• آسیب‌دیدگی، بیماری یا داروی خاص','• شرایط کار و خواب','• هر نکتهٔ دیگه‌ای که مهمه']
+    return '\n'.join(lines)
 
 async def prompt(state, msg, step):
     d=await state.get_data()
     prompts={
-      'name':('نام و نام خانوادگی‌ات رو بنویس:',back_reply_kb()),
-      'phone':('برای هماهنگی برنامه، شمارهٔ خودت رو با دکمهٔ زیر بفرست:',phone_kb()),
+      'name':('👤 نام و نام خانوادگی‌ات رو بنویس:',back_reply_kb(placeholder='مثلاً: علی رضایی')),
+      'phone':('📱 شمارهٔ موبایلت رو با دکمهٔ زیر بفرست:',phone_kb()),
       'age':('چند سالته؟\nمثال: ۲۸',previous_value_kb('سن',d['age']) if d.get('age') is not None else back_reply_kb()),
       'gender':('جنسیت را انتخاب کن:',choice_reply_kb(['مرد','زن'])),
       'height':('قدت رو به سانتی‌متر وارد کن.\nمثال: ۱۷۸',previous_value_kb('قد',d['height_cm']) if d.get('height_cm') is not None else back_reply_kb()),
@@ -336,13 +357,9 @@ async def prompt(state, msg, step):
       'supplements':('اگر مکمل مصرف می‌کنی، اسمش رو بنویس؛ یا یکی از گزینه‌های زیر را بزن.',skip_reply_kb('⏭️ مصرف نمی‌کنم','مصرف می‌کنم')),
       'goal':('🎯 هدفت چیه؟\nیک گزینه را انتخاب کن یا هدف دلخواهت را بنویس. اگر چند هدف داری، همه را در یک پیام بفرست.',choice_reply_kb(['کاهش وزن و چربی','عضله‌سازی','افزایش قدرت','آمادگی و تناسب اندام'])),
       'training_history':('🏋️ سابقهٔ تمرینت چقدره؟\nیک گزینه را انتخاب کن یا مدت، نوع تمرین و وقفه‌ها را خودت بنویس.',choice_reply_kb(['تازه شروع می‌کنم','کمتر از ۶ ماه','۶ ماه تا ۲ سال','بیشتر از ۲ سال'])),
-      'notes':('📝 نکتهٔ دیگه‌ای هست که مربی باید بدونه؟',skip_reply_kb('⏭️ بدون توضیحات')),
+      'notes':(notes_prompt(d),skip_reply_kb('⏭️ بدون توضیحات',placeholder='مثلاً: دور کمر ۸۵، دور شکم ۹۲، زانوی چپم آسیب دیده…')),
     }
     if step=='body_photo': return await ask_photo(msg,state)
-    if step=='measurements':
-        template='\n'.join(f'{label}: ' for label in MEASUREMENTS.values())
-        await msg.answer(_step_title(d,step)+'📏 اندازه‌های امروز، به سانتی‌متر\nمتر را بدون فشار نگه دار؛ کمر باریک‌ترین قسمت و شکم هم‌سطح ناف است. عرض شانه فاصله مستقیم دو سر شانه است، نه دور شانه.\nقالب زیر را کپی و در کادر پیام جای‌گذاری کن؛ جلوی هر دونقطه اندازه خودت را بنویس و هر شش خط را با هم بفرست.',reply_markup=back_reply_kb(placeholder='قالب را بچسبان و شش اندازه را تکمیل کن…'))
-        return await msg.answer('<code>'+escape(template)+'</code>',parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='📋 کپی قالب اندازه‌ها',copy_text=CopyTextButton(text=template))]]))
     text,markup=prompts[step]; await msg.answer(_step_title(d,step)+text,reply_markup=markup)
 
 @router.callback_query(F.data.startswith('buy:'))
@@ -361,7 +378,29 @@ async def choose_product(c: CallbackQuery, state: FSMContext):
     await begin_purchase(c.message,state,pid,c.from_user)
 
 
+def _stored_profile(user: dict) -> dict:
+    """Stable profile values to reuse; changeable body values are only offered as defaults."""
+    profile={
+        'name': user.get('name') or '',
+        'phone': user.get('phone') or '',
+        'gender': user.get('gender') or '',
+        'goal': user.get('goal') or '',
+        'training_history': user.get('training_history') or '',
+        'allergy': user.get('food_allergy') or '',
+        'restriction': user.get('food_restriction') or '',
+        'supplements': user.get('supplements') or '',
+        'notes': user.get('notes') or '',
+        'age': _fsm_value(user.get('age')),
+        'height_cm': _fsm_value(user.get('height_cm')),
+        'weight_kg': _fsm_value(user.get('weight_kg')),
+    }
+    if profile['supplements'] == 'مصرف می‌کنم':
+        profile['supplements'] = ''
+    return profile
+
+
 async def begin_purchase(message: Message, state: FSMContext, pid: int, actor, renewal_of_order_id: int | None = None):
+    """Checkout: contact details -> payment link. The questionnaire opens only after a verified payment."""
     uid=actor.id
 
     try:
@@ -373,61 +412,41 @@ async def begin_purchase(message: Message, state: FSMContext, pid: int, actor, r
         p = await repo.get_product(pid)
         if not p or not p.get('active'):
             return await message.answer('❌ این محصول در حال حاضر در دسترس نیست.')
+        # An unpaid checkout for the same plan is resumed instead of blocking a new one.
+        pending=await repo.awaiting_payment_order(uid,pid)
+        if pending:
+            await state.clear()
+            order=await repo.get_user_order(int(pending['id']),uid)
+            return await send_payment_message(message,order)
         if renewal_of_order_id is None:
             catalog=await repo.get_products_for_user(uid)
             selected=next((x for x in catalog if int(x['id'])==pid),None)
+            if selected and selected.get('form_pending') and selected.get('latest_order_id'):
+                return await start_order_form(message,state,actor,int(selected['latest_order_id']))
             if selected and selected.get('purchased_before'):
                 return await message.answer('این پلن قبلاً خریده شده است. از صفحهٔ خرید دوره، همان پلن را تمدید کن.')
 
         # Clear any stale FSM state before constructing the new order session.
         await state.clear()
         user = await repo.get_user(uid) or {}
-
-        # Only copy stable profile data. Dynamic purchase data are intentionally refreshed.
-        profile = {
-            'name': user.get('name') or '',
-            'phone': user.get('phone') or '',
-            'gender': user.get('gender') or '',
-            'goal': user.get('goal') or '',
-            'training_history': user.get('training_history') or '',
-            'allergy': user.get('food_allergy') or '',
-            'restriction': user.get('food_restriction') or '',
-            'supplements': user.get('supplements') or '',
-            'notes': user.get('notes') or '',
-            'age': _fsm_value(user.get('age')),
-            'height_cm': _fsm_value(user.get('height_cm')),
-            'weight_kg': _fsm_value(user.get('weight_kg')),
-        }
-        previous_photos=[]  # Every purchase starts a new dated assessment.
-        if profile['supplements'] == 'مصرف می‌کنم':
-            profile['supplements'] = ''
-        from app.services.catalog import object_value
-        fields=object_value(p['form_fields']) if 'form_fields' in p else None
-        questions=object_value(p.get('questions',[]))
-        active_steps=purchase_route(str(p['code']),profile,fields)
+        profile=_stored_profile(user)
+        active_steps=contact_route(profile)
         await state.update_data(
+            phase='checkout',
             product_id=int(p['id']),
             product_code=str(p['code']),
             product_title=str(p['title']),
-            price=int(p['price_irr']),
             product_version=p.get('version',1),
-            configured_fields=fields,
-            questions=questions,
-            question_index=0,
-            custom_answers=[],
-            body_photo_file_ids=list(previous_photos),
-            previous_body_photo_file_ids=list(previous_photos),
-            previous_body_photo_count=len(previous_photos),
-            photo_collecting=not bool(previous_photos),
-            active_steps=active_steps,
             renewal_of_order_id=renewal_of_order_id,
-            **profile,
+            active_steps=active_steps,
+            name=profile['name'],
+            phone=profile['phone'],
         )
         from app.services.catalog import duration_label
         await message.answer(f"{p['title']}\n\n{p['description']}\n\nمدت: {duration_label(p)}\nمبلغ: {money(p['price_irr'])}")
         record('bot','checkout','started')
         if not active_steps:
-            return await finish_questionnaire(message,state,uid)
+            return await create_checkout(message,state,uid)
         first=active_steps[0]
         await state.set_state(getattr(PurchaseForm, first))
         await prompt(state, message, first)
@@ -439,6 +458,168 @@ async def begin_purchase(message: Message, state: FSMContext, pid: int, actor, r
         except Exception:
             log.exception('Failed to clear FSM after purchase-start failure for user=%s', uid)
         await message.answer('❌ شروع خرید انجام نشد. اتصال به سرویس موقتاً با مشکل مواجه شد؛ دوباره روی همان برنامه بزن.')
+
+
+def _checkout_method(settings) -> str | None:
+    mode=settings.payment_mode.lower()
+    if mode in {'zarinpal','both','pending'}: return 'zarinpal'
+    if mode=='mock' and settings.app_env!='production': return 'mock'
+    return None
+
+
+async def create_checkout(message: Message, state: FSMContext, uid: int):
+    """Save the unpaid order with the contact details, then show the payment button."""
+    d=await state.get_data()
+    contact={'name':d.get('name') or '','phone':d.get('phone') or ''}
+    if d.get('order_id'):
+        order=await repo.update_order_contact(int(d['order_id']),uid,contact['name'],contact['phone'])
+        await state.clear()
+        if not order:
+            return await message.answer('این سفارش دیگر در انتظار پرداخت نیست.',reply_markup=await customer_menu(uid))
+        return await send_payment_message(message,await repo.get_user_order(int(order['id']),uid))
+    if not await repo.sales_are_open():
+        await state.clear()
+        return await message.answer('⏸️ فروش دوره‌ها موقتاً بسته است. کمی بعد دوباره تلاش کن.',reply_markup=await customer_menu(uid))
+    p=await repo.get_product(d['product_id'])
+    if not p or not p['active']:
+        await state.clear()
+        return await message.answer('❌ این محصول دیگه فعال نیست؛ یک برنامهٔ دیگه انتخاب کن.',reply_markup=await customer_menu(uid))
+    if p.get('version',1)!=d.get('product_version',1):
+        await state.clear()
+        return await message.answer('شرایط دوره تغییر کرده است؛ لطفاً دوباره دوره را انتخاب و شرایط جدید را تأیید کن.',reply_markup=await customer_menu(uid))
+    method=_checkout_method(get_settings())
+    if not method:
+        await state.clear()
+        return await message.answer('❌ پرداخت آنلاین فعلاً فعال نیست. کمی بعد دوباره تلاش کن.',reply_markup=await customer_menu(uid))
+    await state.set_state(PurchaseForm.submitting)
+    try:
+        order=await repo.create_order(uid,p,contact,method,d.get('renewal_of_order_id'))
+    except ValueError as exc:
+        await state.clear()
+        if str(exc) in {'plan already purchased; renew it','renewal not eligible'}:
+            return await message.answer('این دوره قبلاً خریده شده یا هنوز زمان تمدیدش نرسیده است. وضعیت دقیق را از «خرید دوره» ببین.',reply_markup=await customer_menu(uid))
+        log.warning('Order validation rejected: %s',exc)
+        return await message.answer('شرایط دوره تغییر کرده است؛ سفارش ثبت نشد. لطفاً دوباره دوره را انتخاب کن.',reply_markup=await customer_menu(uid))
+    except Exception:
+        record('bot','checkout','invoice','server_error')
+        log.exception('create order failed'); await state.clear()
+        return await message.answer('❌ ثبت سفارش انجام نشد. اتصال رو بررسی کن و دوباره روی همان دوره بزن.',reply_markup=await customer_menu(uid))
+    record('bot','checkout','invoice')
+    await state.clear()
+    await send_payment_message(message,await repo.get_user_order(int(order['id']),uid) or {**order,'product_title':p['title']})
+
+
+async def send_payment_message(message: Message, o: dict):
+    """One message per payment attempt: order summary plus a fresh gateway link."""
+    oid=int(o['id']); contact=repo._json_object(o.get('form_snapshot'))
+    text=_table(f'🧾 سفارش {order_code(oid)}',[('دوره',o['product_title']),('نام',contact.get('name')),('شماره',contact.get('phone')),('مبلغ',money(o['amount']))])
+    if get_settings().payment_pending:
+        return await _screen(message,f'{text}\n\n{PAYMENT_PENDING_NOTE}',pending_order_kb(oid))
+    after=('بعد از پرداخت موفق، همین‌جا فرم کوتاه ثبت‌نام را کامل می‌کنی.'
+           if repo.form_required(repo._json_object(o.get('product_snapshot'))) else 'بعد از پرداخت موفق، دوره برایت فعال می‌شود.')
+    if o.get('payment_method')=='mock':
+        return await _screen(message,f'{text}\n\n🧪 حالت آزمایشی: پرداخت واقعی انجام نمی‌شود.\n{after}',checkout_kb(oid,mock=True))
+    if o.get('payment_method')!='zarinpal':
+        return await message.answer('روش پرداخت این سفارش قدیمی غیرفعال شده است. اگر قبلاً واریز کرده‌ای، پیش از خرید دوباره با پشتیبانی تماس بگیر.')
+    try:
+        pay=await payment.create_zarinpal(oid,o['amount'],o['product_title'])
+        if not pay.success: raise RuntimeError(pay.message)
+        await repo.set_zarinpal_authority(oid,pay.authority)
+    except Exception:
+        log.exception('zarinpal create failed for order=%s',oid)
+        return await _screen(message,f'{text}\n\n❌ ساخت لینک پرداخت انجام نشد. سفارش ذخیره شده؛ چند لحظه بعد «💳 ادامه پرداخت» را بزن.',pending_order_kb(oid))
+    await _screen(message,f'{text}\n\n🔒 برای پرداخت، دکمهٔ «پرداخت امن زرین‌پال» را بزن.\n{after}',checkout_kb(oid,pay.payment_url))
+
+
+@router.callback_query(F.data.startswith('checkout:edit:'))
+async def edit_checkout_contact(c: CallbackQuery, state: FSMContext):
+    try: oid=int(c.data.rsplit(':',1)[1])
+    except ValueError: return await c.answer('درخواست نامعتبر است.',show_alert=True)
+    o=await repo.get_user_order(oid,c.from_user.id)
+    if not o or o['status']!='awaiting_payment':
+        return await c.answer('این سفارش دیگر در انتظار پرداخت نیست.',show_alert=True)
+    await c.answer()
+    await state.clear()
+    await state.update_data(phase='checkout',order_id=oid,product_title=o['product_title'],active_steps=list(CONTACT_STEPS),name='',phone='')
+    await state.set_state(PurchaseForm.name)
+    await prompt(state,c.message,'name')
+
+
+@router.callback_query(F.data.startswith('mockpay:'))
+async def mock_pay(c: CallbackQuery, state: FSMContext):
+    settings=get_settings()
+    if settings.payment_mode.lower()!='mock' or settings.app_env=='production':
+        return await c.answer('این روش پرداخت فعال نیست.',show_alert=True)
+    try: oid=int(c.data.split(':',1)[1])
+    except ValueError: return await c.answer('درخواست نامعتبر است.',show_alert=True)
+    o=await repo.get_user_order(oid,c.from_user.id)
+    if not o or o['status']!='awaiting_payment' or o.get('payment_method')!='mock':
+        return await c.answer('این سفارش دیگر در انتظار پرداخت نیست.',show_alert=True)
+    if not await repo.mark_mock_payment(oid,f'mock:{oid}'):
+        return await c.answer('❌ پرداخت آزمایشی ثبت نشد؛ دوباره تلاش کن.',show_alert=True)
+    await c.answer('✅ پرداخت آزمایشی ثبت شد.')
+    try:
+        await c.message.edit_reply_markup(reply_markup=None)
+    except TelegramBadRequest:
+        pass
+    # Same durable path as a verified gateway payment.
+    from app.services.fulfillment import fulfill_order, record_delivery_failure
+    try:
+        await fulfill_order(c.bot,oid)
+    except Exception as exc:
+        await record_delivery_failure(oid,exc)
+
+
+@router.callback_query(F.data.startswith('form:'))
+async def open_order_form(c: CallbackQuery, state: FSMContext):
+    try: oid=int(c.data.split(':',1)[1])
+    except ValueError: return await c.answer('درخواست نامعتبر است.',show_alert=True)
+    await c.answer()
+    await start_order_form(c.message,state,c.from_user,oid)
+
+
+async def start_order_form(message: Message, state: FSMContext, actor, oid: int):
+    """Open (or reopen from the start) the questionnaire of a paid order."""
+    o=await repo.get_user_order(oid,actor.id)
+    if not o:
+        return await message.answer('سفارش پیدا نشد یا متعلق به حساب شما نیست.')
+    if o.get('form_completed_at'):
+        return await message.answer(f'✅ فرم ثبت‌نام {order_code(oid)} قبلاً ثبت شده است.',reply_markup=await customer_menu(actor.id))
+    if o['status']=='awaiting_payment':
+        return await message.answer('فرم ثبت‌نام بعد از پرداخت موفق باز می‌شود.',reply_markup=pending_order_kb(oid))
+    if not o.get('paid_at') or o['status']=='cancelled':
+        return await message.answer('این سفارش فعال نیست.',reply_markup=await customer_menu(actor.id))
+    terms=repo._json_object(o.get('product_snapshot'))
+    fields=terms.get('form_fields') or []; questions=terms.get('questions') or []
+    profile=_stored_profile(await repo.get_user(actor.id) or {})
+    contact=repo._json_object(o.get('form_snapshot'))
+    profile.update(name=contact.get('name') or profile['name'],phone=contact.get('phone') or profile['phone'])
+    active_steps=purchase_route(str(o.get('product_code') or ''),profile,fields)
+    await state.clear()
+    await state.update_data(
+        phase='form',
+        order_id=oid,
+        product_id=int(o['product_id']),
+        product_code=str(o.get('product_code') or ''),
+        product_title=str(o['product_title']),
+        configured_fields=fields,
+        measurement_hint='measurements' in fields,
+        questions=questions,
+        question_index=0,
+        custom_answers=[],
+        body_photo_file_ids=[],  # Every purchase starts a new dated assessment.
+        previous_body_photo_file_ids=[],
+        previous_body_photo_count=0,
+        photo_collecting=True,
+        active_steps=active_steps,
+        **profile,
+    )
+    await message.answer(f"📝 فرم ثبت‌نام {o['product_title']}\n\nچند سؤال کوتاه تا مربی برنامه را دقیق برای خودت طراحی کند.")
+    if not active_steps:
+        return await finish_questionnaire(message,state,actor.id)
+    first=active_steps[0]
+    await state.set_state(getattr(PurchaseForm, first))
+    await prompt(state, message, first)
 
 
 @router.callback_query(F.data=='renew:list')
@@ -467,8 +648,10 @@ async def start_renewal(message: Message, state: FSMContext, actor, oid: int):
     await begin_purchase(message,state,int(old['product_id']),actor,oid)
 
 async def advance_after(state: FSMContext, msg: Message, current: str):
-    d=await state.get_data(); seq=d.get('active_steps',PURCHASE_STEPS.get(d['product_code'],[]))
-    if current==seq[-1]: return await finish_questionnaire(msg,state)
+    d=await state.get_data(); seq=d.get('active_steps',PURCHASE_STEPS.get(d.get('product_code'),[]))
+    if current==seq[-1]:
+        if d.get('phase')=='checkout': return await create_checkout(msg,state,msg.chat.id)
+        return await finish_questionnaire(msg,state)
     nxt=seq[seq.index(current)+1]
     await state.set_state(getattr(PurchaseForm,nxt)); await prompt(state,msg,nxt)
 
@@ -574,18 +757,9 @@ async def history(m,state):
 
 @router.message(PurchaseForm.notes)
 async def notes(m,state):
-    raw=(m.text or '').strip(); v='' if raw.startswith('⏭️') or raw=='ندارم' else clean_text(raw,1000)
+    raw=(m.text or '').strip(); v='' if raw.startswith('⏭️') or raw=='ندارم' else clean_text(raw,2000)
     await state.update_data(notes=v); await repo.update_user(m.from_user.id,notes=v); await advance_after(state,m,'notes')
 
-
-@router.message(PurchaseForm.measurements)
-async def body_measurements(m,state):
-    try:
-        values=parse_measurements(m.text or '')
-    except ValueError as exc:
-        return await m.answer(str(exc))
-    await state.update_data(measurements=values)
-    await advance_after(state,m,'measurements')
 
 async def ask_photo(msg,state):
     d=await state.get_data(); count=len(d.get('body_photo_file_ids',[])); collecting=bool(d.get('photo_collecting'))
@@ -745,25 +919,23 @@ async def custom_question(m,state):
     await finish_questionnaire(m,state)
 
 
+FIELD_LABELS={'name':'نام','phone':'تلفن','age':'سن','gender':'جنسیت','height':'قد','weight':'وزن','allergy':'حساسیت','restriction':'محدودیت غذایی','supplements':'مکمل','goal':'هدف','training_history':'سابقه تمرین','notes':'توضیحات','body_photo':'عکس‌ها'}
+
+
 async def show_summary(msg,state,tg_id: int | None=None):
-    d=await state.get_data(); code=d['product_code']; ids=d.get('body_photo_file_ids',[])
+    d=await state.get_data(); ids=d.get('body_photo_file_ids',[])
     if 'body_photo' in d.get('active_steps',[]) and len(ids)<required_body_photos(d):
         return await ask_photo(msg,state)
-    text=f"📋 بررسی اطلاعات سفارش\n\nمحصول: {d['product_title']}\nنام: {d.get('name')}\nشماره: {d.get('phone')}\nسن: {d.get('age')}\nجنسیت: {d.get('gender')}\nقد: {d.get('height_cm')}\nوزن: {d.get('weight_kg')}\n"
-    if code in ('nutrition','complete'): text+=f"حساسیت: {d.get('allergy','-')}\nمحدودیت: {d.get('restriction','-')}\nمکمل: {d.get('supplements','-')}\n"
-    if code in ('training','complete'): text+=f"هدف: {d.get('goal','-')}\nسابقه تمرین: {d.get('training_history','-')}\n"
-    text+=f"توضیحات: {d.get('notes') or '-'}\nعکس بدن: {len(ids)} عدد\n\nمبلغ: {money(d['price'])}"
-    if d.get('configured_fields') is not None:
-        labels={'name':'نام','phone':'تلفن','age':'سن','gender':'جنسیت','height':'قد','weight':'وزن','allergy':'حساسیت','restriction':'محدودیت غذایی','supplements':'مکمل','goal':'هدف','training_history':'سابقه تمرین','notes':'توضیحات','body_photo':'عکس‌ها'}
-        labels['measurements']='اندازه‌های بدن'
-        details=[f"{labels[field]}: {len(ids) if field=='body_photo' else measurements_text(d.get('measurements') or {}) if field=='measurements' else d.get(KEYMAP[field]) or '-'}" for field in d['configured_fields']]
-        details.extend(f"{a['question']}: {a['answer']}" for a in d.get('custom_answers',[]))
-        text=f"📋 بررسی اطلاعات سفارش\n\n{d['product_title']}\n"+'\n'.join(details)+f"\n\nمبلغ: {money(d['price'])}"
-    if d.get('configured_fields') is None and d.get('measurements'):
-        text+='\n\n'+measurements_text(d['measurements'])
+    fields=[field for field in d.get('configured_fields') or d.get('active_steps') or [] if field in FIELD_LABELS]
+    for field in CONTACT_STEPS:
+        if field not in fields: fields.insert(CONTACT_STEPS.index(field),field)
+    if d.get('measurement_hint') and 'notes' not in fields: fields.append('notes')
+    details=[f"{FIELD_LABELS[field]}: {len(ids) if field=='body_photo' else d.get(KEYMAP[field]) or '-'}" for field in fields]
+    details.extend(f"{a['question']}: {a['answer']}" for a in d.get('custom_answers',[]))
+    text=f"📋 بررسی اطلاعات ثبت‌نام\n\n{d['product_title']}\n"+'\n'.join(details)+'\n\nاگر همه‌چیز درست است، «ثبت نهایی اطلاعات» را بزن.'
     await state.update_data(photo_prompt_message_id=None)
     await state.set_state(PurchaseForm.confirm)
-    await msg.answer('⏳ در حال پردازش اطلاعات…',reply_markup=await customer_menu(tg_id or msg.from_user.id))
+    await msg.answer('✅ سؤال‌ها تمام شد.',reply_markup=await customer_menu(tg_id or msg.chat.id))
     parts=split_message(text)
     for part in parts[:-1]: await msg.answer(part)
     await msg.answer(parts[-1],reply_markup=confirm_kb())
@@ -771,11 +943,9 @@ async def show_summary(msg,state,tg_id: int | None=None):
 @router.callback_query(PurchaseForm.confirm,F.data=='restart_form')
 async def restart(c,state):
     d=await state.get_data()
-    active_steps=list(d.get('active_steps',PURCHASE_STEPS.get(d['product_code'],[])))
-    keep={k:d.get(k) for k in ('product_id','product_code','product_title','price','renewal_of_order_id','name','phone','age','gender','height_cm','weight_kg','allergy','restriction','supplements','goal','training_history','notes')}
+    active_steps=list(d.get('active_steps',PURCHASE_STEPS.get(d.get('product_code'),[])))
+    keep={k:d.get(k) for k in ('phase','order_id','product_id','product_code','product_title','measurement_hint','configured_fields','questions','name','phone','age','gender','height_cm','weight_kg','allergy','restriction','supplements','goal','training_history','notes')}
     previous=normalize_photos(d.get('body_photo_file_ids'))
-    keep['measurements']=d.get('measurements')
-    keep.update({k:d.get(k) for k in ('product_version','configured_fields','questions')})
     await state.clear()
     await state.update_data(**keep,body_photo_file_ids=previous,previous_body_photo_file_ids=previous,photo_collecting=not bool(previous),active_steps=active_steps)
     await state.update_data(question_index=0,custom_answers=[])
@@ -787,87 +957,53 @@ async def restart(c,state):
 
 @router.callback_query(PurchaseForm.confirm,F.data=='confirm')
 async def confirm(c,state):
+    """Submit the questionnaire of an already paid order."""
     if not is_customer(c.from_user.id):return await c.answer('دسترسی ندارید.',show_alert=True)
-    settings=get_settings()
-    await state.set_state(PurchaseForm.payment_method)
-    text=(f'📝 سفارشت آماده ثبت است\n\n{PAYMENT_PENDING_NOTE}' if settings.payment_pending
-          else '💳 روش پرداخت رو انتخاب کن\n\nبعد از تأیید پرداخت، سفارش مطابق شرایط دوره پردازش می‌شود.')
-    await c.message.edit_text(text,reply_markup=payment_methods_kb(settings.payment_mode.lower()))
-    await c.answer()
+    d=await state.get_data(); oid=d.get('order_id')
+    if not oid:
+        # A checkout started before pay-first checkout; its answers cannot be attached to an order.
+        await state.clear(); await c.answer()
+        return await c.message.answer('روند خرید به‌روز شده است؛ لطفاً دوره را دوباره از «🛒 خرید دوره» انتخاب کن.',reply_markup=await customer_menu(c.from_user.id))
+    if 'body_photo' in d.get('active_steps',[]) and len(d.get('body_photo_file_ids') or [])<required_body_photos(d):
+        await c.answer()
+        return await ask_photo(c.message,state)
+    snapshot={KEYMAP[field]:d.get(KEYMAP[field]) for field in d.get('configured_fields') or d.get('active_steps') or [] if field in KEYMAP and field not in CONTACT_STEPS and field!='measurements'}
+    snapshot['custom_answers']=d.get('custom_answers',[])
+    await c.answer('⏳ در حال ثبت اطلاعات…')
+    await state.set_state(PurchaseForm.submitting)
+    try:
+        order=await repo.complete_order_form(int(oid),c.from_user.id,snapshot)
+    except ValueError as exc:
+        if str(exc)=='four body photos required':
+            await state.set_state(PurchaseForm.body_photo)
+            return await ask_photo(c.message,state)
+        await state.clear()
+        if str(exc)=='form already completed':
+            return await c.message.answer(f'✅ فرم ثبت‌نام {order_code(oid)} قبلاً ثبت شده است.',reply_markup=await customer_menu(c.from_user.id))
+        log.warning('Questionnaire rejected for order=%s: %s',oid,exc)
+        return await c.message.answer('این سفارش دیگر فعال نیست؛ اگر فکر می‌کنی اشتباهی رخ داده، با پشتیبانی تماس بگیر.',reply_markup=await customer_menu(c.from_user.id))
+    except Exception:
+        log.exception('questionnaire submit failed for order=%s',oid)
+        await state.set_state(PurchaseForm.confirm)
+        return await c.message.answer('❌ ثبت اطلاعات انجام نشد؛ اطلاعاتت محفوظ است. چند لحظه بعد دوباره «ثبت نهایی اطلاعات» را بزن.',reply_markup=confirm_kb())
+    await state.clear()
+    record('bot','checkout','questionnaire')
+    try:
+        await c.message.edit_reply_markup(reply_markup=None)
+    except TelegramBadRequest:
+        pass
+    terms=repo._json_object(order.get('product_snapshot'))
+    if terms.get('delivery_mode','manual')=='manual':
+        text=terms.get('response_text') or '✅ ثبت‌نام کامل شد!\n\nاطلاعاتت برای مربی ارسال شد و در صف بررسی قرار گرفت؛ وقتی برنامه آماده شد، همین‌جا برات ارسال می‌شه.'
+    else:
+        text='✅ اطلاعاتت ثبت شد. ممنون!'
+    await c.message.answer(text,reply_markup=await customer_menu(c.from_user.id))
 
 @router.callback_query(PurchaseForm.confirm,F.data=='form_back')
 async def form_back_from_confirm(c,state):
     d=await state.get_data(); steps=d.get('active_steps',[]); await c.answer()
     if not steps: return await finish_questionnaire(c.message,state,c.from_user.id)
     await state.set_state(getattr(PurchaseForm,steps[-1])); await prompt(state,c.message,steps[-1])
-
-@router.callback_query(PurchaseForm.payment_method,F.data=='payment_back')
-async def payment_back(c,state):
-    await show_summary(c.message,state,c.from_user.id)
-    await c.answer()
-
-@router.callback_query(PurchaseForm.payment_method,F.data.startswith('pay:'))
-async def choose_payment(c,state):
-    if not is_customer(c.from_user.id):return await c.answer('دسترسی ندارید.',show_alert=True)
-    if not await repo.sales_are_open():
-        await state.clear()
-        await c.answer('فروش موقتاً بسته است.',show_alert=True)
-        return await c.message.answer('⏸️ فروش دوره‌ها موقتاً بسته است. کمی بعد دوباره تلاش کن.',reply_markup=await customer_menu(c.from_user.id))
-    method=c.data.split(':')[1]; settings=get_settings(); mode=settings.payment_mode.lower()
-    allowed={'zarinpal'} if mode in {'zarinpal','both','pending'} else ({'mock'} if mode=='mock' and settings.app_env!='production' else set())
-    if method not in allowed:return await c.answer('این روش پرداخت فعال نیست.',show_alert=True)
-    await c.answer('⏳ در حال ثبت سفارش…')
-    d=await state.get_data(); p=await repo.get_product(d['product_id'])
-    if not p or not p['active']:return await c.message.answer('❌ این محصول دیگه فعال نیست؛ یک برنامهٔ دیگه انتخاب کن.')
-    if p.get('version',1)!=d.get('product_version',1):
-        await state.clear()
-        return await c.message.answer('شرایط دوره تغییر کرده است؛ لطفاً دوباره دوره را انتخاب و شرایط جدید را تأیید کن.')
-    snapshot={k:d.get(k) for k in ('name','phone','age','gender','height_cm','weight_kg','allergy','restriction','supplements','goal','training_history','notes','body_photo_file_ids')}
-    if d.get('configured_fields') is not None:
-        snapshot={KEYMAP[field]:d.get(KEYMAP[field]) for field in d['configured_fields']}
-    if 'measurements' in (d.get('configured_fields') or d.get('active_steps',[])):
-        try:
-            snapshot['measurements']=validate_measurements(d.get('measurements'),complete=True)
-        except ValueError:
-            await c.message.answer('اندازه‌های بدن هنوز کامل نشده‌اند؛ لطفاً شش اندازه را وارد کن. اطلاعات قبلی محفوظ است.')
-            await state.set_state(PurchaseForm.measurements)
-            return await prompt(state,c.message,'measurements')
-    if d.get('measurements'): snapshot['measurements']=d['measurements']
-    if 'body_photo' in d.get('active_steps',[]) and len(d.get('body_photo_file_ids') or [])<required_body_photos(d):
-        return await ask_photo(c.message,state)
-    snapshot['custom_answers']=d.get('custom_answers',[])
-    await state.set_state(PurchaseForm.submitting)
-    db_method=method
-    try: order=await repo.create_order(c.from_user.id,p,snapshot,db_method,d.get('renewal_of_order_id'))
-    except ValueError as exc:
-        if str(exc) in {'plan already purchased; renew it','renewal not eligible'}:
-            await state.clear()
-            return await c.message.answer('این دوره قبلاً خریده شده یا هنوز زمان تمدیدش نرسیده است. وضعیت دقیق را از «خرید دوره» ببین.',reply_markup=await customer_menu(c.from_user.id))
-        if str(exc)=='four body photos required':
-            return await ask_photo(c.message,state)
-        await state.set_state(PurchaseForm.payment_method)
-        log.warning('Order validation rejected: %s',exc)
-        return await c.message.answer('اطلاعات یا شرایط سفارش نیاز به بررسی دارد؛ سفارش ثبت نشده و اطلاعات فرم محفوظ است. دوباره شرایط دوره را بررسی کن.',reply_markup=payment_methods_kb(mode))
-    except Exception:
-        record('bot','checkout','invoice','server_error')
-        log.exception('create order failed'); await state.set_state(PurchaseForm.payment_method)
-        return await c.message.answer('❌ ثبت سفارش انجام نشد. اتصال رو بررسی کن و دوباره تلاش کن.',reply_markup=payment_methods_kb(mode))
-    record('bot','checkout','invoice')
-    if settings.payment_pending:
-        await state.clear()
-        return await c.message.answer(f"✅ سفارش {order_code(order['id'])} ثبت شد.\n\n{PAYMENT_PENDING_NOTE}",reply_markup=pending_order_kb(order['id']))
-    if method=='mock':
-        paid=await repo.mark_mock_payment(order['id'],f"mock:{order['id']}")
-        await state.clear()
-        if not paid:return await c.message.answer('❌ پرداخت آزمایشی ثبت نشد؛ از سفارش‌های من دوباره تلاش کن.')
-        return await c.message.answer(f"✅ پرداخت آزمایشی سفارش {order_code(order['id'])} ثبت شد.\n\nسفارش مطابق شرایط دوره پردازش می‌شود.",reply_markup=await customer_menu(c.from_user.id))
-    try:
-        pay=await payment.create_zarinpal(order['id'],p['price_irr'],p['title'])
-        if not pay.success: raise RuntimeError(pay.message)
-        await repo.set_zarinpal_authority(order['id'],pay.authority)
-        await state.clear(); await c.message.answer(f'🔒 پرداخت امن زرین‌پال\n\n💰 مبلغ: {money(p["price_irr"])}\nبعد از پرداخت به ربات برگرد؛ تأیید به‌صورت خودکار انجام می‌شه.',reply_markup=InlineKeyboardBuilder().button(text='ورود به درگاه امن',url=pay.payment_url).as_markup())
-    except Exception:
-        log.exception('zarinpal create failed'); await state.clear(); await c.message.answer('❌ ساخت لینک پرداخت انجام نشد. سفارش ذخیره شده و از «سفارش‌های من» می‌تونی دوباره تلاش کنی.',reply_markup=pending_order_kb(order['id']))
 
 async def _handle_receipt(m, state, file_id: str, receipt_type: str):
     await state.clear()
@@ -912,7 +1048,6 @@ async def back(m,state):
     if name == 'confirm':
         if not order: return await show_products_message(m)
         prev=order[-1]
-    elif name == 'payment_method': prev='confirm'
     else:
         if name not in order:return await home_message(m)
         idx=order.index(name)
@@ -1107,28 +1242,8 @@ async def pay_pending_order(c: CallbackQuery, state: FSMContext):
         return await c.answer('این سفارش دیگر در انتظار پرداخت نیست.', show_alert=True)
 
     await c.answer('⏳ در حال آماده‌سازی پرداخت…')
-
-    method=o.get('payment_method')
-    if get_settings().payment_pending:
-        return await c.message.answer(PAYMENT_PENDING_NOTE)
-    if method == 'card_to_card':
-        await state.clear()
-        await c.message.answer('روش پرداخت این سفارش قدیمی غیرفعال شده است. اگر قبلاً واریز کرده‌ای، پیش از خرید دوباره با پشتیبانی تماس بگیر.')
-        return
-    if method == 'zarinpal':
-        try:
-            pay=await payment.create_zarinpal(oid, o['amount'], o['product_title'])
-            if not pay.success:
-                return await c.message.answer('❌ ساخت لینک پرداخت انجام نشد. کمی بعد دوباره تلاش کن.')
-            await repo.set_zarinpal_authority(oid, pay.authority)
-            b=InlineKeyboardBuilder()
-            b.button(text='💳 پرداخت امن زرین‌پال', url=pay.payment_url)
-            await c.message.answer(f'💳 مبلغ: {money(o["amount"])}\n\nبرای پرداخت روی لینک زیر بزن:', reply_markup=b.as_markup())
-            return
-        except Exception:
-            log.exception('pending zarinpal payment failed')
-            return await c.message.answer('❌ ساخت لینک پرداخت انجام نشد. کمی بعد دوباره تلاش کن.')
-    return await c.message.answer('❌ روش پرداخت این سفارش معتبر نیست.')
+    await state.clear()
+    await send_payment_message(c.message,o)
 
 
 @router.callback_query(F.data.startswith('order:receipt:'))
@@ -1213,6 +1328,11 @@ async def show_order_detail_message(m: Message, tg_id: int, oid: int, active_cou
         markup=renewal_order_kb(oid,bool(o.get('plan_file_id') or repo._json_object(o.get('product_snapshot')).get('delivery_mode') in {'content','channel'}),bool(o.get('renewal_eligible')))
     else:
         b=InlineKeyboardBuilder(); b.button(text='⬅️ تاریخچه سفارشات',callback_data='orders'); b.adjust(1); markup=b.as_markup()
+    form_pending=bool(o.get('paid_at')) and not o.get('form_completed_at') and o['status']!='cancelled'
+    if form_pending and not active_course:
+        b=InlineKeyboardBuilder.from_markup(markup) if markup else InlineKeyboardBuilder()
+        b.row(InlineKeyboardButton(text='📝 تکمیل فرم ثبت‌نام',callback_data=f'form:{oid}',style='success'))
+        markup=b.as_markup()
     if o['status']=='needs_info':
         from app.db.core import db
         async with db.acquire() as connection:
@@ -1227,7 +1347,7 @@ async def show_order_detail_message(m: Message, tg_id: int, oid: int, active_cou
     text='\n\n'.join([
         _table(f"📋 {'جزئیات دوره' if active_course else ('تمدید' if renewal else 'جزئیات سفارش')} {code}",[
             ('دوره',o['product_title']),('کد سفارش',code),('زمان ثبت',local_dt(o.get('created_at'))),
-            ('مبلغ',money(o['amount'])),('وضعیت',order_status_fa(o['status'],renewal)),
+            ('مبلغ',money(o['amount'])),('وضعیت','📝 منتظر تکمیل فرم ثبت‌نام' if form_pending else order_status_fa(o['status'],renewal)),
             ('زمان دوره',subscription_time_fa(o.get('days_remaining'),o.get('duration_days'))),
         ]),
         f'🧭 مسیر انجام دوره\n{progress_path(o["status"],renewal)}{active_renewal}',
@@ -1268,21 +1388,7 @@ async def start_pending_payment(m: Message, state: FSMContext, tg_id: int, oid: 
     o=await repo.get_user_order(oid,tg_id)
     if not o or o['status'] != 'awaiting_payment':
         return await m.answer('این سفارش دیگر در انتظار پرداخت نیست.')
-    if get_settings().payment_pending:
-        return await m.answer(PAYMENT_PENDING_NOTE)
-    if o.get('payment_method') == 'card_to_card':
-        return await m.answer('روش پرداخت این سفارش قدیمی غیرفعال است. اگر قبلاً واریز کرده‌ای، پیش از خرید دوباره با پشتیبانی تماس بگیر.')
-    if o.get('payment_method') == 'zarinpal':
-        try:
-            pay=await payment.create_zarinpal(oid,o['amount'],o['product_title'])
-            if not pay.success:
-                return await m.answer('❌ ساخت لینک پرداخت انجام نشد. کمی بعد دوباره تلاش کن.')
-            await repo.set_zarinpal_authority(oid,pay.authority)
-            return await m.answer(f'💳 پرداخت امن زرین‌پال\n\nمبلغ: {money(o["amount"])}\nلینک پرداخت:\n{pay.payment_url}',disable_web_page_preview=True)
-        except Exception:
-            log.exception('pending zarinpal payment failed')
-            return await m.answer('❌ ساخت لینک پرداخت انجام نشد. کمی بعد دوباره تلاش کن.')
-    return await m.answer('❌ روش پرداخت این سفارش معتبر نیست.')
+    await send_payment_message(m,o)
 
 
 async def prompt_cancel_order(m: Message, state: FSMContext, tg_id: int, oid: int):

@@ -113,12 +113,13 @@ async def get_products_for_user(tg_id: int):
                      AND (p.duration_days<>-1 OR o.status<>'delivered')
                  ) AS purchased_before,
                  latest.id AS latest_order_id, latest.status AS latest_status,
+                 (latest.paid_at IS NOT NULL AND latest.form_completed_at IS NULL) AS form_pending,
                  latest.days_remaining, latest.renewal_eligible, latest.duration_days AS purchased_duration_days,
                  (latest.renewal_of_order_id IS NOT NULL
                    AND latest.status NOT IN ('cancelled','delivered')) AS renewal_in_progress
           FROM products p
           LEFT JOIN LATERAL (
-            SELECT o.id,o.status,o.renewal_of_order_id,o.duration_days,
+            SELECT o.id,o.status,o.renewal_of_order_id,o.duration_days,o.paid_at,o.form_completed_at,
                    CASE WHEN o.delivered_at IS NULL OR o.duration_days<=0 THEN NULL ELSE
                      CEIL(EXTRACT(EPOCH FROM (course_expiry(o.delivered_at,o.duration_days,o.subscription_expires_at) - NOW()))/86400.0)::int END AS days_remaining,
                    (o.status='delivered' AND o.delivered_at IS NOT NULL AND o.duration_days>0
@@ -152,11 +153,7 @@ async def create_order(tg_id: int, product: dict, data: dict, payment_method: st
             if not current_product or current_product['version']!=product.get('version',1):
                 raise ValueError('product changed')
             product=dict(current_product)
-            from app.utils.measurements import validate_measurements, required_body_photos
-            if 'measurements' in _json_list(product.get('form_fields')):
-                data={**data,'measurements':validate_measurements(data.get('measurements'),complete=True)}
-            if 'body_photo' in _json_list(product.get('form_fields')) and len(_json_list(data.get('body_photo_file_ids')))<required_body_photos(data):
-                raise ValueError('four body photos required')
+            form_done=not form_required(product)
             if renewal_of_order_id:
                 eligible=await c.fetchval("""
                   SELECT EXISTS(
@@ -180,22 +177,84 @@ async def create_order(tg_id: int, product: dict, data: dict, payment_method: st
                 """,user['id'],product['id'],product['duration_days'])
                 if purchased: raise ValueError('plan already purchased; renew it')
             row = await c.fetchrow("""
-              INSERT INTO orders(user_id,product_id,amount,status,form_snapshot,payment_method,payment_status,renewal_of_order_id,duration_days,product_snapshot)
-              VALUES($1,$2,$3,'awaiting_payment',$4::jsonb,$5,'pending',$6,$7,$8::jsonb) RETURNING *
-            """, user['id'], product['id'], product['price_irr'], json.dumps(data, ensure_ascii=False), payment_method, renewal_of_order_id,product['duration_days'],json.dumps(purchase_terms(product),ensure_ascii=False))
-            await c.execute(
-                "INSERT INTO user_profile_history(user_id,product_code,order_id,snapshot) VALUES($1,$2,$3,$4::jsonb)",
-                user['id'], product.get('code'), row['id'], json.dumps(data, ensure_ascii=False)
-            )
-            photos=_json_list(data.get('body_photo_file_ids'))[:6]
-            if data.get('measurements'):
-                await c.execute('UPDATE users SET measurements=$2::jsonb,updated_at=NOW() WHERE id=$1',user['id'],json.dumps(data['measurements']))
-            last_file_id=(photos[-1].get('file_id') if photos and isinstance(photos[-1],dict) else photos[-1] if photos else None)
-            if 'body_photo' in _json_list(product.get('form_fields')): await c.execute(
-                "UPDATE users SET body_photo_file_id=$2,body_photo_file_ids=$3::jsonb,updated_at=NOW() WHERE id=$1",
-                user['id'],last_file_id,json.dumps(photos,ensure_ascii=False),
-            )
+              INSERT INTO orders(user_id,product_id,amount,status,form_snapshot,payment_method,payment_status,renewal_of_order_id,duration_days,product_snapshot,form_completed_at)
+              VALUES($1,$2,$3,'awaiting_payment',$4::jsonb,$5,'pending',$6,$7,$8::jsonb,CASE WHEN $9::boolean THEN NOW() END) RETURNING *
+            """, user['id'], product['id'], product['price_irr'], json.dumps(data, ensure_ascii=False), payment_method, renewal_of_order_id,product['duration_days'],json.dumps(purchase_terms(product),ensure_ascii=False),form_done)
+            if form_done:
+                await _record_questionnaire(c,user['id'],product,row['id'],data)
             return dict(row)
+
+
+def form_required(product: dict) -> bool:
+    """Whether the customer still owes a questionnaire after paying (contact details come first)."""
+    fields=[field for field in _json_list(product.get('form_fields')) if field not in {'name','phone'}]
+    return bool(fields or _json_list(product.get('questions')))
+
+
+async def _record_questionnaire(c, user_id: int, product: dict, order_id: int, data: dict):
+    await c.execute(
+        "INSERT INTO user_profile_history(user_id,product_code,order_id,snapshot) VALUES($1,$2,$3,$4::jsonb)",
+        user_id, product.get('code'), order_id, json.dumps(data, ensure_ascii=False)
+    )
+    if data.get('measurements'):
+        await c.execute('UPDATE users SET measurements=$2::jsonb,updated_at=NOW() WHERE id=$1',user_id,json.dumps(data['measurements']))
+    if 'body_photo' in _json_list(product.get('form_fields')):
+        photos=_json_list(data.get('body_photo_file_ids'))[:6]
+        last_file_id=(photos[-1].get('file_id') if photos and isinstance(photos[-1],dict) else photos[-1] if photos else None)
+        await c.execute(
+            "UPDATE users SET body_photo_file_id=$2,body_photo_file_ids=$3::jsonb,updated_at=NOW() WHERE id=$1",
+            user_id,last_file_id,json.dumps(photos,ensure_ascii=False),
+        )
+
+
+async def complete_order_form(order_id: int, tg_id: int, data: dict):
+    """Attach the questionnaire to a paid order exactly once; the order's own purchase terms decide what is required."""
+    from app.utils.measurements import validate_measurements, required_body_photos
+    async with db.acquire() as c:
+        async with c.transaction():
+            row=await c.fetchrow("""
+              SELECT o.*,p.code FROM orders o JOIN users u ON u.id=o.user_id JOIN products p ON p.id=o.product_id
+              WHERE o.id=$1 AND u.telegram_id=$2 FOR UPDATE OF o
+            """,order_id,tg_id)
+            if not row: raise ValueError('order not found')
+            if row['form_completed_at']: raise ValueError('form already completed')
+            if not row['paid_at'] or row['status']=='cancelled': raise ValueError('order not paid')
+            terms=_json_object(row['product_snapshot'])
+            snapshot={**_json_object(row['form_snapshot']),**data}
+            if snapshot.get('measurements'):
+                snapshot['measurements']=validate_measurements(snapshot['measurements'])
+            else:
+                snapshot.pop('measurements',None)
+            if 'body_photo' in _json_list(terms.get('form_fields')) and len(_json_list(snapshot.get('body_photo_file_ids')))<required_body_photos(snapshot):
+                raise ValueError('four body photos required')
+            await c.execute("SELECT set_config('app.record_edit','questionnaire',true)")
+            updated=await c.fetchrow("""
+              UPDATE orders SET form_snapshot=$2::jsonb,form_completed_at=NOW(),updated_at=NOW() WHERE id=$1 RETURNING *
+            """,order_id,json.dumps(snapshot,ensure_ascii=False))
+            await _record_questionnaire(c,row['user_id'],{**terms,'code':row['code']},order_id,snapshot)
+            return dict(updated)
+
+
+async def update_order_contact(order_id: int, tg_id: int, name: str, phone: str):
+    async with db.acquire() as c:
+        async with c.transaction():
+            await c.execute("SELECT set_config('app.record_edit','questionnaire',true)")
+            row=await c.fetchrow("""
+              UPDATE orders o SET form_snapshot=COALESCE(o.form_snapshot,'{}'::jsonb)||jsonb_build_object('name',$3::text,'phone',$4::text),updated_at=NOW()
+              FROM users u WHERE o.id=$1 AND o.user_id=u.id AND u.telegram_id=$2
+                AND o.status='awaiting_payment' AND o.paid_at IS NULL RETURNING o.*
+            """,order_id,tg_id,name,phone)
+            return dict(row) if row else None
+
+
+async def awaiting_payment_order(tg_id: int, product_id: int):
+    async with db.acquire() as c:
+        row=await c.fetchrow("""
+          SELECT o.* FROM orders o JOIN users u ON u.id=o.user_id
+          WHERE u.telegram_id=$1 AND o.product_id=$2 AND o.status='awaiting_payment' AND o.paid_at IS NULL
+          ORDER BY o.created_at DESC,o.id DESC LIMIT 1
+        """,tg_id,product_id)
+        return dict(row) if row else None
 
 async def profile_history(tg_id: int, page: int = 1, page_size: int = 5):
     page=max(1,page); page_size=max(1,min(page_size,20)); offset=(page-1)*page_size
@@ -365,7 +424,7 @@ async def list_sensi_orders(page: int = 1, page_size: int = 10, status: str | No
               OR LOWER(COALESCE(o.product_snapshot->>'title',p.title)) LIKE '%'||$2||'%')
         """,status,query)
         rows = await c.fetch("""
-          SELECT o.id,o.status,o.amount,o.created_at,o.updated_at,o.payment_method,o.payment_status,o.paid_at,COALESCE(o.product_snapshot->>'title',p.title) AS product_title,
+          SELECT o.id,o.status,o.amount,o.created_at,o.updated_at,o.payment_method,o.payment_status,o.paid_at,o.form_completed_at,COALESCE(o.product_snapshot->>'title',p.title) AS product_title,
                  COALESCE(o.product_snapshot->>'delivery_mode','manual') AS delivery_mode,
                  u.id AS customer_id,u.telegram_id,u.name,u.first_name,u.last_name,u.username
           FROM orders o JOIN products p ON p.id=o.product_id JOIN users u ON u.id=o.user_id
@@ -376,7 +435,7 @@ async def list_sensi_orders(page: int = 1, page_size: int = 10, status: str | No
             AND ($2='' OR LOWER(COALESCE(u.name,'') || ' ' || COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,'') || ' ' || COALESCE(u.username,'')) LIKE '%'||$2||'%'
               OR u.telegram_id::text=$2 OR o.id::text=$2 OR ('ORD-'||LPAD(o.id::text,6,'0')) ILIKE '%'||$2||'%'
               OR LOWER(COALESCE(o.product_snapshot->>'title',p.title)) LIKE '%'||$2||'%')
-          ORDER BY CASE o.status WHEN 'paid' THEN 2 WHEN 'in_progress' THEN 3 WHEN 'ready' THEN 3 ELSE 4 END,
+          ORDER BY CASE WHEN o.status='paid' AND o.form_completed_at IS NULL THEN 5 WHEN o.status='paid' THEN 2 WHEN o.status IN ('in_progress','ready') THEN 3 ELSE 4 END,
                    o.created_at,o.id LIMIT $3 OFFSET $4
         """,status,query,page_size,offset)
         return [dict(r) for r in rows],int(total or 0)
@@ -388,7 +447,8 @@ async def sensi_dashboard_counts():
           SELECT
             (SELECT COUNT(*) FROM orders WHERE status IN ('paid','needs_info','in_progress','ready')) AS actionable,
             0 AS receipts,
-            (SELECT COUNT(*) FROM orders WHERE status='paid' AND COALESCE(product_snapshot->>'delivery_mode','manual')='manual') AS new_orders,
+            (SELECT COUNT(*) FROM orders WHERE status='paid' AND form_completed_at IS NOT NULL AND COALESCE(product_snapshot->>'delivery_mode','manual')='manual') AS new_orders,
+            (SELECT COUNT(*) FROM orders WHERE status='paid' AND form_completed_at IS NULL AND COALESCE(product_snapshot->>'delivery_mode','manual')='manual') AS awaiting_form,
             (SELECT COUNT(*) FROM orders WHERE status='paid' AND COALESCE(product_snapshot->>'delivery_mode','manual')<>'manual') AS automatic,
             (SELECT COUNT(*) FROM orders WHERE status IN ('in_progress','ready')) AS designing,
             (SELECT COUNT(*) FROM orders WHERE status='needs_info') AS needs_info,

@@ -72,12 +72,12 @@ def choice_reply_kb(options, include_home=True):
     return _persistent(rows)
 
 
-def skip_reply_kb(skip_text='⏭️ ندارم', *more):
+def skip_reply_kb(skip_text='⏭️ ندارم', *more, placeholder='انتخاب کن یا پاسخ خودت را بنویس…'):
     rows = [[KeyboardButton(text=skip_text, style='success' if skip_text.startswith('✅') else None)]]
     for x in more:
         rows.append([KeyboardButton(text=x, style='success' if x.startswith('✅') else None)])
     rows.append([KeyboardButton(text=MAIN)])
-    return _persistent(rows)
+    return _persistent(rows,placeholder)
 
 
 def previous_value_kb(label: str, value):
@@ -140,17 +140,29 @@ def edit_photo_kb(photo_count: int=0, collecting: bool=True, can_restore: bool=F
     return _persistent(rows)
 
 
-def payment_methods_kb(mode: str):
+def checkout_kb(order_id: int, payment_url: str | None = None, mock: bool = False):
+    """The single next action after contact details: pay, fix the contact details, or cancel."""
     rows=[]
-    if mode in {'zarinpal', 'both'}:
-        rows.append([InlineKeyboardButton(text='🔒 پرداخت امن زرین‌پال', callback_data='pay:zarinpal', style='primary')])
-    if mode == 'pending':
-        # no gateway yet: the order is saved now and paid once ZarinPal is approved
-        rows.append([InlineKeyboardButton(text='📝 ثبت سفارش (پرداخت بعد از فعال شدن درگاه)', callback_data='pay:zarinpal', style='primary')])
-    if mode == 'mock':
-        rows.append([InlineKeyboardButton(text='🧪 پرداخت آزمایشی', callback_data='pay:mock', style='success')])
-    rows.append([InlineKeyboardButton(text=BACK, callback_data='payment_back')])
+    if payment_url:
+        rows.append([InlineKeyboardButton(text='🔒 پرداخت امن زرین‌پال', url=payment_url, style='success')])
+    elif mock:
+        rows.append([InlineKeyboardButton(text='🧪 پرداخت آزمایشی', callback_data=f'mockpay:{order_id}', style='success')])
+    rows.append([InlineKeyboardButton(text='✏️ ویرایش نام و شماره', callback_data=f'checkout:edit:{order_id}')])
+    rows.append([InlineKeyboardButton(text='❌ لغو سفارش', callback_data=f'order:cancel:{order_id}', style='danger')])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def payment_failed_kb(order_id: int):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text='💳 پرداخت دوباره', callback_data=f'order:pay:{order_id}', style='primary')],
+        [InlineKeyboardButton(text='❌ لغو سفارش', callback_data=f'order:cancel:{order_id}', style='danger')],
+    ])
+
+
+def order_form_kb(order_id: int):
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text='📝 تکمیل فرم ثبت‌نام', callback_data=f'form:{order_id}', style='success')
+    ]])
 
 
 def receipt_actions_kb(order_id):
@@ -180,6 +192,10 @@ def products_kb(products, page=1, pages=1):
     for p in products:
         if not p.get('purchased_before'):
             text=f"✨ خرید {p['title']} — {int(p['price_irr']):,} تومان"; data=f"buy:{p['id']}"; style='success'
+        elif p.get('latest_status') == 'awaiting_payment':
+            text=f"💳 ادامه پرداخت {p['title']}"; data=f"buy:{p['id']}"; style='primary'
+        elif p.get('form_pending') and p.get('latest_order_id'):
+            text=f"📝 تکمیل فرم ثبت‌نام {p['title']}"; data=f"form:{p['latest_order_id']}"; style='success'
         elif p.get('renewal_eligible'):
             text=f"🔄 تمدید {p['title']} — {subscription_time_fa(p.get('days_remaining'))}"; data=f"renew:{p['latest_order_id']}"; style='success'
         elif p.get('renewal_in_progress'):
@@ -208,7 +224,7 @@ def support_contact_kb(url: str):
 
 def confirm_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text='✅ تأیید و رفتن به پرداخت', callback_data='confirm', style='success')],
+        [InlineKeyboardButton(text='✅ ثبت نهایی اطلاعات', callback_data='confirm', style='success')],
         [InlineKeyboardButton(text='✏️ شروع دوباره', callback_data='restart_form', style='danger')],
     ])
 

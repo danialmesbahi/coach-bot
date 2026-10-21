@@ -107,6 +107,17 @@ Reuse other profile information such as goal, training history, allergy, restric
 
 Every completed questionnaire/order creates an independent snapshot. Profile edits update the current profile only. Authorized staff can explicitly edit a particular order; its previous version is preserved in `record_revisions`. Never silently rewrite a past order from a profile edit.
 
+## Checkout order (pay before the questionnaire)
+
+Since 2026-10-21 a purchase runs in this order:
+
+1. Contact details: full name and phone (Telegram contact button). Stored values are reused; the payment message shows them with an «✏️ ویرایش نام و شماره» button.
+2. The unpaid order is saved with only the contact details and the customer gets the ZarinPal button directly (no separate «choose payment method» step).
+3. After server-verified payment the bot sends «پرداخت با موفقیت انجام شد» with a «📝 تکمیل فرم ثبت‌نام» button; a failed or cancelled payment sends «پرداخت ناموفق بود» with «💳 پرداخت دوباره», once per gateway attempt, and never changes the order.
+4. The questionnaire below is attached to the paid order exactly once (`orders.form_completed_at`). A paid order whose form is not finished stays resumable (order detail, purchase list, `?start=form_<id>`) and staff see it as «منتظر فرم شاگرد»; design cannot start until the form is submitted.
+
+Body measurements are not a separate required template. They are optional free text in the notes step, whose prompt lists what to include (measurements, injuries, conditions). Old orders keep their structured measurements.
+
 ## Customer purchase forms
 
 ### Nutrition plan
@@ -140,9 +151,9 @@ Collect the union of the necessary nutrition + training fields without duplicati
 
 ## Photos
 
-Customers can submit **up to 6 body photos per order**.
+Customers can submit **up to 6 body photos per order**, inside the questionnaire after payment.
 
-For body-assessment products, each purchase/renewal starts with no photos. Men must submit four directions (front, back, right, left); women can explicitly continue without photos. The bot requests fresh submissions but cannot prove capture age. Measurements refresh for each purchase; historical photos and measurements remain attached to their original order. Ready-made/channel products without assessment fields are exempt.
+For body-assessment products, each purchase/renewal starts with no photos. Men must submit four directions (front, back, right, left); women can explicitly continue without photos. The bot requests fresh submissions but cannot prove capture age. Measurements, when the customer writes them, belong to that purchase's notes; historical photos and measurements remain attached to their original order. Ready-made/channel products without assessment fields are exempt.
 
 The bot should support photo messages and photo-like Telegram documents where the implementation allows it.
 

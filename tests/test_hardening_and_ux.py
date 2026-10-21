@@ -2,8 +2,8 @@ from pathlib import Path
 import pytest
 
 from app.config import Settings
-from app.keyboards import confirm_kb, payment_methods_kb
-from app.handlers.user import PROFILE_KEYMAP, PURCHASE_STEPS, purchase_route
+from app.keyboards import checkout_kb, confirm_kb, payment_failed_kb
+from app.handlers.user import PROFILE_KEYMAP, PURCHASE_STEPS, _checkout_method, contact_route, purchase_route
 from app.db.repositories import _json_object
 from app.services.payment import toman_to_irr
 from app.utils.text import split_message
@@ -16,24 +16,34 @@ def callbacks(markup):
     return {button.callback_data for row in markup.inline_keyboard for button in row if button.callback_data}
 
 
-def test_payment_keyboard_only_shows_enabled_methods():
-    assert callbacks(payment_methods_kb('mock')) == {'pay:mock', 'payment_back'}
-    assert callbacks(payment_methods_kb('card_to_card')) == {'payment_back'}
-    assert callbacks(payment_methods_kb('zarinpal')) == {'pay:zarinpal', 'payment_back'}
-    assert callbacks(payment_methods_kb('both')) == {'pay:zarinpal', 'payment_back'}
+def test_checkout_shows_one_payment_action_and_never_mock_in_production():
+    settings=lambda mode, env='development': Settings(bot_token='1:x',database_url='postgresql://x',redis_url='redis://x',sensi_id=1,payment_mode=mode,app_env=env,_env_file=None)
+    assert _checkout_method(settings('mock')) == 'mock'
+    assert _checkout_method(settings('zarinpal')) == 'zarinpal'
+    assert _checkout_method(settings('both')) == 'zarinpal'
+    assert _checkout_method(settings('pending')) == 'zarinpal'
+    assert _checkout_method(settings('mock','production')) is None
+    gateway=checkout_kb(7,'https://payment.zarinpal.com/pg/StartPay/A1')
+    assert gateway.inline_keyboard[0][0].url.endswith('/A1')
+    assert callbacks(gateway) == {'checkout:edit:7','order:cancel:7'}
+    assert callbacks(checkout_kb(7,mock=True)) == {'mockpay:7','checkout:edit:7','order:cancel:7'}
+    assert callbacks(payment_failed_kb(7)) == {'order:pay:7','order:cancel:7'}
 
 
 def test_primary_and_destructive_actions_have_native_telegram_styles():
-    payment={button.callback_data: getattr(button,'style',None) for row in payment_methods_kb('mock').inline_keyboard for button in row}
+    checkout={button.callback_data: getattr(button,'style',None) for row in checkout_kb(7,mock=True).inline_keyboard for button in row}
     confirm={button.callback_data: getattr(button,'style',None) for row in confirm_kb().inline_keyboard for button in row}
-    assert payment['pay:mock'] == 'success'
+    assert checkout['mockpay:7'] == 'success'
+    assert checkout['order:cancel:7'] == 'danger'
     assert confirm['confirm'] == 'success'
     assert confirm['restart_form'] == 'danger'
 
 
 def test_returning_customer_gets_short_contiguous_purchase_route():
     profile={'name':'کاربر','phone':'09120000000','gender':'مرد','goal':'عضله‌سازی','training_history':'یک سال','notes':'-'}
-    assert purchase_route('training',profile) == ['age','height','weight','measurements','notes','body_photo']
+    assert contact_route(profile) == []
+    assert contact_route({'name':'کاربر'}) == ['phone']
+    assert purchase_route('training',profile) == ['age','height','weight','notes','body_photo']
     assert purchase_route('nutrition',{}) == PURCHASE_STEPS['nutrition']
 
 

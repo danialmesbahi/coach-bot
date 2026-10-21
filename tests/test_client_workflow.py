@@ -57,15 +57,17 @@ def test_live_chat_persists_each_message_without_leaving_chat(monkeypatch):
     state.clear.assert_not_awaited()
 
 
-def test_migrated_fields_use_canonical_order_and_refresh_measurements():
+def test_measurements_are_optional_free_text_in_the_notes_step():
     fields=['name','gender','weight','body_photo','measurements']
-    assert user.purchase_route('custom',{'name':'Client','gender':'زن'},fields)==['weight','measurements','body_photo']
+    assert user.purchase_route('custom',{'name':'Client','gender':'زن'},fields)==['weight','notes','body_photo']
+    assert user.purchase_route('custom',{'gender':'زن','notes':'old'},[*fields,'notes'])==['weight','notes','body_photo']
+    assert 'measurements' not in user.purchase_route('nutrition',{})
 
 
 @pytest.mark.parametrize('gender,count,allowed',[('زن',0,True),('female',0,True),('مرد',0,False),('مرد',3,False),('مرد',4,True)])
 def test_photos_required_only_for_men_and_remaining_steps_are_not_skipped(monkeypatch,gender,count,allowed):
     data={'gender':gender,'body_photo_file_ids':[{'file_id':str(i)} for i in range(count)],
-          'product_code':'custom','active_steps':['body_photo','measurements']}
+          'product_code':'custom','active_steps':['body_photo','notes']}
     state=SimpleNamespace(get_data=AsyncMock(return_value=data),update_data=AsyncMock(),set_state=AsyncMock())
     message=SimpleNamespace(from_user=SimpleNamespace(id=998),answer=AsyncMock())
     prompt=AsyncMock();finish=AsyncMock()
@@ -74,8 +76,8 @@ def test_photos_required_only_for_men_and_remaining_steps_are_not_skipped(monkey
     asyncio.run(user.finish_photos(message,state))
     finish.assert_not_awaited()
     if allowed:
-        state.set_state.assert_awaited_once_with(user.PurchaseForm.measurements)
-        prompt.assert_awaited_once_with(state,message,'measurements')
+        state.set_state.assert_awaited_once_with(user.PurchaseForm.notes)
+        prompt.assert_awaited_once_with(state,message,'notes')
     else:
         prompt.assert_not_awaited()
         assert 'چهار عکس' in message.answer.await_args.args[0]
@@ -108,14 +110,17 @@ def test_record_photo_selection_validation():
     assert validate_fields({'photo_ids':[9,2]})=={'photo_ids':[9,2]}
 
 
-def test_measurement_prompt_has_copyable_template_and_contextual_input():
+@pytest.mark.parametrize('hint',[True,False])
+def test_notes_prompt_hints_what_to_write_without_a_template(hint):
     message=SimpleNamespace(answer=AsyncMock())
-    state=SimpleNamespace(get_data=AsyncMock(return_value={'product_code':'custom','active_steps':['measurements']}))
-    asyncio.run(user.prompt(state,message,'measurements'))
-    first,last=message.answer.await_args_list
-    assert 'انتخاب کن' not in first.kwargs['reply_markup'].input_field_placeholder
-    template=last.kwargs['reply_markup'].inline_keyboard[0][0].copy_text.text
-    assert 'دور کمر:' in template and len(template.splitlines())==6
+    state=SimpleNamespace(get_data=AsyncMock(return_value={'product_code':'custom','active_steps':['notes'],'measurement_hint':hint}))
+    asyncio.run(user.prompt(state,message,'notes'))
+    message.answer.assert_awaited_once()
+    text=message.answer.await_args.args[0]; markup=message.answer.await_args.kwargs['reply_markup']
+    assert ('دور کمر' in text) is hint and 'اختیاری' in text
+    assert any(b.text=='⏭️ بدون توضیحات' for row in markup.keyboard for b in row)
+    assert 'دور کمر' in markup.input_field_placeholder
+    assert not hasattr(markup,'inline_keyboard')
 
 
 @pytest.mark.parametrize('step,expected',[('goal','عضله‌سازی'),('training_history','تازه شروع می‌کنم'),('restriction','گیاه‌خوار هستم'),('supplements','مصرف می‌کنم')])
@@ -140,27 +145,18 @@ def test_preset_and_free_text_answers_are_saved_and_advance(monkeypatch,handler,
     advance.assert_awaited_once_with(state,message,step)
 
 
-@pytest.mark.parametrize('missing_measurements',[True,False])
-def test_checkout_validation_does_not_report_false_previous_purchase(monkeypatch,missing_measurements):
-    from app.utils.measurements import MEASUREMENTS
-    monkeypatch.setattr(user,'is_customer',lambda _:True)
+@pytest.mark.parametrize('error,previous',[('product changed',False),('plan already purchased; renew it',True)])
+def test_checkout_validation_does_not_report_false_previous_purchase(monkeypatch,error,previous):
     monkeypatch.setattr(user,'get_settings',lambda:SimpleNamespace(payment_mode='mock',app_env='development'))
+    monkeypatch.setattr(user,'customer_menu',AsyncMock(return_value=None))
     monkeypatch.setattr(user.repo,'sales_are_open',AsyncMock(return_value=True))
     monkeypatch.setattr(user.repo,'get_product',AsyncMock(return_value={'id':4,'active':True,'version':1}))
-    create=AsyncMock(side_effect=ValueError('product changed'))
+    create=AsyncMock(side_effect=ValueError(error))
     monkeypatch.setattr(user.repo,'create_order',create)
-    data={'product_id':4,'product_version':1,'product_code':'custom',
-          'configured_fields':['measurements'],'active_steps':['measurements'],
-          'measurements':None if missing_measurements else {k:60 for k in MEASUREMENTS}}
+    data={'phase':'checkout','product_id':4,'product_version':1,'product_code':'custom','name':'Client','phone':'0912','active_steps':['phone']}
     state=SimpleNamespace(get_data=AsyncMock(return_value=data),set_state=AsyncMock(),clear=AsyncMock())
-    c=SimpleNamespace(from_user=SimpleNamespace(id=998),data='pay:mock',answer=AsyncMock(),message=SimpleNamespace(answer=AsyncMock()))
-    prompt=AsyncMock();monkeypatch.setattr(user,'prompt',prompt)
-    asyncio.run(user.choose_payment(c,state))
-    state.clear.assert_not_awaited()
-    assert all('قبلاً' not in call.args[0] for call in c.message.answer.await_args_list)
-    if missing_measurements:
-        create.assert_not_awaited()
-        prompt.assert_awaited_once_with(state,c.message,'measurements')
-    else:
-        create.assert_awaited_once()
-        assert state.set_state.await_args.args[0]==user.PurchaseForm.payment_method
+    message=SimpleNamespace(answer=AsyncMock())
+    asyncio.run(user.create_checkout(message,state,998))
+    create.assert_awaited_once_with(998,{'id':4,'active':True,'version':1},{'name':'Client','phone':'0912'},'mock',None)
+    state.clear.assert_awaited_once()
+    assert ('قبلاً' in message.answer.await_args.args[0]) is previous

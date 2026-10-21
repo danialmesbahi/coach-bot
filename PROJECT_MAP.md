@@ -41,11 +41,12 @@ edit router → customer router (private chats only; no web-login approval)
 ## Core flow
 
 ```text
-buy → PurchaseForm → users update + order snapshot → payment
-→ server-verified payment → information review → design → customer delivery
+buy → name + phone → unpaid order (contact only) → ZarinPal link
+→ server-verified payment → questionnaire (complete_order_form) → information review → design → customer delivery
 ```
 
-- A new assessment order refreshes age/height/weight/measurements/photos; stable profile values are reused. Four male photos are required; female photos remain optional.
+- The questionnaire opens only after payment and is attached once (`orders.form_completed_at`); paid-but-unfinished forms are resumable and blocked from design.
+- A new assessment order refreshes age/height/weight/notes/photos; stable profile values are reused. Measurements are optional free text in notes (no template). Four male photos are required; female photos remain optional.
 - Every order gets `form_snapshot` and profile history. Profile edits never mutate an order. Staff edits target either the current profile or a specific order and preserve revisions.
 - `docs/CLIENT_WORKFLOW_PLAN.md` contains the implemented flow and verification boundaries.
 - Ownership must use `get_user_order`; privileged callbacks must role-check.
@@ -54,8 +55,8 @@ buy → PurchaseForm → users update + order snapshot → payment
 
 ## UX contract
 
-- Customer: product → numbered questionnaire → review → payment → order detail/status → plan/support.
-- Recovery stays on the same order: failed gateway → «ادامه پرداخت»; cancellation preserves the record. Card transfer is retired; historical receipts are view-only.
+- Customer: product → name/phone → payment → numbered questionnaire → review → order detail/status → plan/support.
+- Recovery stays on the same order: failed gateway → «پرداخت ناموفق بود» + «پرداخت دوباره»; unfinished form → «تکمیل فرم ثبت‌نام»; cancellation preserves the record. Card transfer is retired; historical receipts are view-only.
 - Information requests expose a Telegram completion button and return submissions to the same task's review queue, not chat.
 - Paid customers use persistent chat: each valid message is saved immediately; only the explicit end button exits.
 - Orders/messages/files/revisions are paginated; media downloads run on a separate bounded archive worker.

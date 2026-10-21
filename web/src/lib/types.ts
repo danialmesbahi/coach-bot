@@ -70,6 +70,7 @@ export interface OrderListItem {
   payment_method?: string;
   payment_status?: string;
   paid_at?: string;
+  form_completed_at?: string | null;
 }
 
 export interface OrderDetail extends OrderListItem {
@@ -90,7 +91,7 @@ export interface OrderDetail extends OrderListItem {
 }
 
 export interface OrderPage extends PageResult<OrderListItem> {
-  counts: { actionable:number; receipts:number; new_orders:number; designing:number; needs_info:number; automatic?:number };
+  counts: { actionable:number; receipts:number; new_orders:number; awaiting_form?:number; designing:number; needs_info:number; automatic?:number };
 }
 
 export interface ThreadListItem {
