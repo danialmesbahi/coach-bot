@@ -3,6 +3,7 @@ import hashlib, re
 from aiohttp import web
 from app.services.payment import payment
 from app.services import pay_pages
+from app.services.geo import is_iranian
 from app.db import repositories as repo
 from aiogram import Bot, Dispatcher, F
 from aiogram.exceptions import TelegramNetworkError, TelegramServerError
@@ -72,6 +73,15 @@ def _result_page(ok: bool, title: str, detail: str, start: str = '', status: int
     return web.Response(text=page,content_type='text/html',status=status,headers={'Cache-Control':'no-store',**(headers or {})})
 
 
+def _client_ip(request):
+    """The visitor's address as the edge saw it; the inner ingress trusts only the host nginx for these headers."""
+    headers=getattr(request,'headers',{})
+    for name in ('X-Coach-Client-IP','X-Real-IP'):
+        if is_iranian(headers.get(name)) is not None:
+            return headers.get(name)
+    return ''
+
+
 async def payment_font(_request):
     return web.FileResponse(pay_pages.FONT,headers={'Cache-Control':'public, max-age=31536000, immutable','Content-Type':'font/woff2'})
 
@@ -97,10 +107,14 @@ async def payment_redirect(request):
         # Every new attempt replaces the authority, so an older link can never be paid twice.
         return _result_page(False,'این لینک پرداخت منقضی شده است','از ربات دوباره «💳 ادامه پرداخت» را بزن تا لینک تازه ساخته شود.',f"pay_{order['id']}",status=410,tone='info')
     target=payment.start_url(authority)
-    page=pay_pages.render('wait','در حال انتقال به درگاه پرداخت','چند لحظه صبر کن؛ صفحه پرداخت امن زرین‌پال خودکار باز می‌شود.',
-        rows=(('مبلغ',money(order['amount'])),('شماره سفارش',order['id'])),
-        note='اگر صفحه درگاه باز نشد، فیلترشکن را خاموش کن و دکمه زیر را بزن.',
-        action=('ورود به درگاه زرین‌پال',target),redirect=target)
+    rows=(('مبلغ',money(order['amount'])),('شماره سفارش',order['id']))
+    if getattr(request,'query',{}).get('vpn')!='off' and is_iranian(_client_ip(request)) is False:
+        # Bank gateways refuse foreign addresses; say so here instead of letting ZarinPal fail.
+        page=pay_pages.render('vpn','به نظر می‌رسد فیلترشکن روشن است','درگاه‌های بانکی ایران با اینترنت خارج از ایران باز نمی‌شوند. قبل از پرداخت این کارها را انجام بده:',
+            steps=pay_pages.VPN_STEPS,action=('خاموش کردم، تلاش دوباره',f'/pay/{authority}'),
+            alt=('فیلترشکن ندارم، ادامه پرداخت',f'/pay/{authority}?vpn=off'))
+    else:
+        page=pay_pages.handoff(target,rows,_bot_link(f"pay_{order['id']}"))
     # The navigation from this page carries our origin as the referrer ZarinPal checks.
     return web.Response(text=page,content_type='text/html',headers={'Referrer-Policy':'origin','Cache-Control':'no-store'})
 
