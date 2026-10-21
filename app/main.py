@@ -1,7 +1,7 @@
 import asyncio, logging
-import hashlib, json, re
-from html import escape
+import hashlib, re
 from aiohttp import web
+from app import payment_pages as pages
 from app.services.payment import payment
 from app.db import repositories as repo
 from aiogram import Bot, Dispatcher, F
@@ -61,20 +61,16 @@ async def zarinpal_callback(request):
         return web.Response(text='بررسی پرداخت زمان برد؛ کمی بعد دوباره تلاش کنید.',status=503,headers={'Retry-After':'20'})
 
 
-def _result_page(ok: bool, title: str, detail: str, start: str = '', status: int = 200, headers=None):
-    """What the customer sees in the browser after the gateway; the bot link resumes the right step."""
-    link=f'https://t.me/{settings.bot_username}' + (f'?start={start}' if start else '')
-    color='#15803d' if ok else '#b91c1c'
-    page=(f'<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8">'
-          f'<meta name="viewport" content="width=device-width,initial-scale=1"><title>{title}</title></head>'
-          f'<body style="font-family:Tahoma,sans-serif;background:#f6f7f9;margin:0;display:grid;place-items:center;min-height:100vh">'
-          f'<main style="background:#fff;border-radius:16px;padding:32px 24px;max-width:420px;margin:16px;text-align:center;box-shadow:0 2px 12px #0001">'
-          f'<h1 style="color:{color};font-size:22px">{title}</h1><p style="line-height:1.9;color:#333">{detail}</p>'
-          f'<a href="{link}" style="display:inline-block;margin-top:12px;background:#229ED9;color:#fff;padding:12px 24px;border-radius:12px;text-decoration:none">بازگشت به ربات</a>'
-          '</main></body></html>')
-    return web.Response(text=page,content_type='text/html',status=status,headers=headers)
+def _back(label: str, start: str = ''):
+    """The bot link resumes the right step."""
+    return (label, f'https://t.me/{settings.bot_username}' + (f'?start={start}' if start else ''))
 
 
+def _order_rows(order, *extra):
+    return [('دوره',order.get('product_title')),('مبلغ',money(order['amount']) if order.get('amount') is not None else ''),*extra]
+
+
+REFUND_NOTE='اگه مبلغی از حسابت کم شده، طبق قوانین بانکی حداکثر تا ۷۲ ساعت بعد به حسابت برمی‌گرده.'
 _AUTHORITY=re.compile(r'[A-Za-z0-9_-]{8,128}')
 
 
@@ -82,30 +78,26 @@ async def payment_redirect(request):
     """Hand the browser to ZarinPal from our own domain; the gateway rejects visitors referred from elsewhere."""
     authority=request.match_info.get('authority','')
     if not _AUTHORITY.fullmatch(authority):
-        return _result_page(False,'لینک پرداخت نامعتبر است','از ربات دوباره «💳 ادامه پرداخت» را بزن.',status=404)
+        return pages.page('info','لینک پرداخت نامعتبره','از ربات دوباره «💳 ادامه پرداخت» رو بزن.',action=_back('بازگشت به ربات'),status=404)
     try:
         order=await repo.get_order_by_authority(authority)
     except Exception:
         logging.getLogger(__name__).exception('Payment hand-off lookup failed')
-        return _result_page(False,'درگاه موقتاً در دسترس نیست','چند لحظه بعد دوباره همین لینک را باز کن.',status=503,headers={'Retry-After':'20'})
+        return pages.page('info','درگاه موقتاً در دسترس نیست','چند لحظه بعد دوباره همین لینک رو باز کن.',status=503,headers={'Retry-After':'20'})
     if not order:
-        return _result_page(False,'لینک پرداخت پیدا نشد','از ربات دوباره «💳 ادامه پرداخت» را بزن.',status=404)
+        return pages.page('info','لینک پرداخت پیدا نشد','از ربات دوباره «💳 ادامه پرداخت» رو بزن.',action=_back('بازگشت به ربات'),status=404)
     if order.get('payment_status')=='paid' or order.get('paid_at'):
-        return _result_page(True,'پرداخت قبلاً تأیید شده است','برای ادامه ثبت‌نام به ربات برگرد.',f"form_{order['id']}")
+        return pages.page('success','این سفارش قبلاً پرداخت شده','برای ادامه به ربات برگرد.',rows=_order_rows(order),action=_back('بازگشت به ربات',f"form_{order['id']}"))
     if order.get('status')!='awaiting_payment' or order.get('payment_authority')!=authority:
         # Every new attempt replaces the authority, so an older link can never be paid twice.
-        return _result_page(False,'این لینک پرداخت منقضی شده است','از ربات دوباره «💳 ادامه پرداخت» را بزن تا لینک تازه ساخته شود.',f"pay_{order['id']}",status=410)
+        return pages.page('info','این لینک پرداخت منقضی شده','از ربات دوباره «💳 ادامه پرداخت» رو بزن تا لینک تازه ساخته بشه.',
+                          rows=_order_rows(order),action=_back('دریافت لینک تازه از ربات',f"pay_{order['id']}"),status=410)
     target=payment.start_url(authority)
-    page=('<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8">'
-          '<meta name="viewport" content="width=device-width,initial-scale=1"><title>انتقال به درگاه پرداخت</title></head>'
-          '<body style="font-family:Tahoma,sans-serif;background:#f6f7f9;margin:0;display:grid;place-items:center;min-height:100vh">'
-          '<main style="background:#fff;border-radius:16px;padding:32px 24px;max-width:420px;margin:16px;text-align:center;box-shadow:0 2px 12px #0001">'
-          f'<h1 style="font-size:20px;color:#14213d">در حال انتقال به درگاه پرداخت…</h1>'
-          f'<p style="line-height:1.9;color:#333">مبلغ: {money(order["amount"])}<br>اگر چند ثانیه بعد منتقل نشدی، دکمه زیر را بزن.</p>'
-          f'<a href="{escape(target,quote=True)}" style="display:inline-block;margin-top:12px;background:#15803d;color:#fff;padding:12px 24px;border-radius:12px;text-decoration:none">ورود به درگاه زرین‌پال</a>'
-          f'</main><script>location.replace({json.dumps(target)})</script></body></html>')
     # The navigation from this page carries our origin as the referrer ZarinPal checks.
-    return web.Response(text=page,content_type='text/html',headers={'Referrer-Policy':'origin','Cache-Control':'no-store'})
+    return pages.page('redirect','در حال انتقال به درگاه پرداخت','چند لحظه صبر کن؛ خودکار منتقل می‌شی.',
+                      rows=_order_rows(order),action=('ورود به درگاه امن پرداخت',target),redirect=target,
+                      note='پرداخت از طریق زرین‌پال و شبکه شاپرک انجام می‌شه. اگه درگاه باز نشد، فیلترشکن رو خاموش کن.',
+                      headers={'Referrer-Policy':'origin'})
 
 
 _notices=set()
@@ -133,28 +125,33 @@ async def _send_payment_failed(order, authority):
 
 async def _verify_payment_callback(authority, status):
     order=await repo.get_order_by_authority(authority)
-    if not order: return _result_page(False,'سفارش پیدا نشد','اطلاعات این پرداخت در سامانه پیدا نشد.',status=404)
+    if not order: return pages.page('info','سفارش پیدا نشد','اطلاعات این پرداخت در سامانه پیدا نشد.',action=_back('بازگشت به ربات'),status=404)
     form=f"form_{order['id']}"
+    next_step=('برای تکمیل فرم ثبت‌نام به ربات برگرد.' if repo.form_required(repo._json_object(order.get('product_snapshot')))
+               else 'دوره‌ت فعال شد؛ ادامه کار توی ربات.')
+    retry=_back('بازگشت به ربات و پرداخت دوباره',f"pay_{order['id']}")
     if order.get('payment_status')=='paid' or order.get('paid_at'):
-        return _result_page(True,'پرداخت قبلاً تأیید شده است','برای ادامهٔ ثبت‌نام به ربات برگرد.',form)
+        return pages.page('success','پرداخت قبلاً تأیید شده',next_step,rows=_order_rows(order),action=_back('بازگشت به ربات',form))
     if status.upper()!='OK':
         # A browser return is not proof of cancellation. Never persist attacker-controlled replays.
         _notify_payment_failed(order,authority)
-        return _result_page(False,'پرداخت ناموفق بود','پرداخت انجام نشد. اگر مبلغی کم شده، تا ۷۲ ساعت بعد برمی‌گردد. از ربات می‌توانی دوباره پرداخت کنی.',f"pay_{order['id']}")
+        return pages.page('fail','پرداخت ناموفق بود','پرداخت انجام نشد؛ سفارشت محفوظه و می‌تونی دوباره پرداخت کنی.',rows=_order_rows(order),action=retry,note=REFUND_NOTE)
     try:
         result=await payment.verify_zarinpal(authority,int(order['amount']))
     except Exception:
         logging.getLogger(__name__).exception('Zarinpal verify failed')
-        return _result_page(False,'بررسی پرداخت انجام نشد','لطفاً چند دقیقه بعد وضعیت سفارش را از ربات بررسی کنید.',f"order_{order['id']}",status=502)
+        return pages.page('info','بررسی پرداخت انجام نشد','چند دقیقه بعد وضعیت سفارش رو از ربات ببین؛ اگه پرداخت شده باشه خودکار تأیید می‌شه.',
+                          rows=_order_rows(order),action=_back('بازگشت به ربات',f"order_{order['id']}"),status=502)
     if not result.success:
         _notify_payment_failed(order,authority)
-        return _result_page(False,'پرداخت ناموفق بود','پرداخت توسط درگاه تأیید نشد. اگر مبلغی کم شده، تا ۷۲ ساعت بعد برمی‌گردد. از ربات می‌توانی دوباره پرداخت کنی.',f"pay_{order['id']}",status=400)
+        return pages.page('fail','پرداخت ناموفق بود','درگاه این پرداخت رو تأیید نکرد؛ سفارشت محفوظه و می‌تونی دوباره پرداخت کنی.',rows=_order_rows(order),action=retry,note=REFUND_NOTE,status=400)
     paid=await repo.mark_zarinpal_paid(order['id'],result.reference_id or authority)
     if paid:
         await repo.add_audit(order['telegram_id'],'zarinpal_paid','order',order['id'],{'reference_id':result.reference_id})
         # The durable fulfillment worker sends the configured response, including on retries.
-    return _result_page(True,'پرداخت با موفقیت انجام شد',
-        f"کد پیگیری: {escape(str(result.reference_id or '-'))}<br>برای تکمیل فرم ثبت‌نام به ربات برگرد.",form)
+    return pages.page('success','پرداخت با موفقیت انجام شد',next_step,
+                      rows=_order_rows(order,('کد پیگیری',result.reference_id or '-')),action=_back('بازگشت به ربات',form),
+                      note='کد پیگیری رو برای پیگیری‌های بعدی نگه دار.')
 
 async def _stop_task(task):
     task.cancel()
@@ -202,6 +199,7 @@ async def run_webhook(dp, redis, background_tasks):
     app['redis']=redis
     app['payment_slots']=asyncio.Semaphore(4)
     app.router.add_get('/payment/zarinpal/callback', zarinpal_callback)
+    app.router.add_get(pages.FONT_URL, pages.font)
     app.router.add_get('/pay/{authority}', payment_redirect)
     SimpleRequestHandler(dispatcher=dp, bot=bot, secret_token=settings.webhook_secret, handle_in_background=False).register(app, path=path)
     setup_application(app, dp, bot=bot)

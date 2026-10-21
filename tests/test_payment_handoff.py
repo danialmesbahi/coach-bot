@@ -36,6 +36,41 @@ def test_handoff_page_sends_our_origin_to_zarinpal(monkeypatch):
     assert response.headers['Cache-Control'] == 'no-store'
     assert main.payment.start_url(order['payment_authority']) in response.text
     assert '1,500 تومان' in response.text
+    assert 'در حال انتقال به درگاه پرداخت' in response.text
+    assert 'setTimeout' in response.text  # The transfer message stays visible before the redirect.
+
+
+def test_success_page_shows_receipt_and_escapes_values(monkeypatch):
+    from app import main
+    order = _order(product_title='<b>دوره</b>', telegram_id=9,
+                   product_snapshot={'form_fields': ['name', 'phone', 'age']})
+    monkeypatch.setattr(main.repo, 'get_order_by_authority', AsyncMock(return_value=order))
+    monkeypatch.setattr(main.payment, 'verify_zarinpal', AsyncMock(return_value=SimpleNamespace(success=True, reference_id='REF-77')))
+    monkeypatch.setattr(main.repo, 'mark_zarinpal_paid', AsyncMock(return_value={'id': 42}))
+    monkeypatch.setattr(main.repo, 'add_audit', AsyncMock())
+    response = asyncio.run(main._verify_payment_callback(order['payment_authority'], 'OK'))
+    assert response.status == 200
+    assert 'REF-77' in response.text and 'پرداخت با موفقیت انجام شد' in response.text
+    assert '&lt;b&gt;دوره&lt;/b&gt;' in response.text and '<b>دوره</b>' not in response.text
+    assert 'تکمیل فرم ثبت‌نام' in response.text and 'start=form_42' in response.text
+    assert 'هٔ' not in response.text
+
+
+def test_failure_page_offers_a_retry(monkeypatch):
+    from app import main
+    order = _order(telegram_id=9)
+    monkeypatch.setattr(main.repo, 'get_order_by_authority', AsyncMock(return_value=order))
+    monkeypatch.setattr(main, '_notify_payment_failed', lambda *args: None)
+    response = asyncio.run(main._verify_payment_callback(order['payment_authority'], 'NOK'))
+    assert 'پرداخت ناموفق بود' in response.text and 'start=pay_42' in response.text and '۷۲ ساعت' in response.text
+
+
+def test_pages_use_the_bundled_font():
+    from app import payment_pages as pages
+    assert pages.FONT_PATH.is_file()
+    assert pages.FONT_URL.startswith('/pay/')  # Served through the same edge route as the page.
+    response = asyncio.run(pages.font(None))
+    assert response.headers['Content-Type'] == 'font/woff2'
 
 
 @pytest.mark.parametrize('changes,status', [
