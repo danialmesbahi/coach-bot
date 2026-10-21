@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from urllib.parse import quote
 import aiohttp
 from app.config import get_settings
 
@@ -13,6 +14,12 @@ class PaymentResult:
 
 def toman_to_irr(amount: int) -> int:
     return int(amount) * 10
+
+
+def relay_url(authority: str) -> str:
+    """Our own /pay/ hand-off page: ZarinPal only admits visitors referred by the merchant's registered domain."""
+    base=get_settings().public_base_url.rstrip('/')
+    return f"{base}/pay/{quote(authority, safe='')}" if base else ''
 
 class ZarinpalGateway:
     REQUEST_URL = 'https://payment.zarinpal.com/pg/v4/payment/request.json'
@@ -34,7 +41,9 @@ class ZarinpalGateway:
                 data=await r.json(content_type=None)
         if r.status != 200 or not data.get('data') or data['data'].get('code') != 100 or not data['data'].get('authority'):
             return PaymentResult(False,message=str(data.get('errors') or data))
-        auth=data['data']['authority']; return PaymentResult(True,authority=auth,payment_url=self.START_URL.format(authority=auth))
+        auth=data['data']['authority']; return PaymentResult(True,authority=auth,payment_url=relay_url(auth) or self.start_url(auth))
+    def start_url(self, authority:str)->str:
+        return self.START_URL.format(authority=quote(authority, safe=''))
     async def verify(self, authority:str, amount:int)->PaymentResult:
         if not self.merchant_id: raise RuntimeError('Zarinpal is not configured')
         payload={'merchant_id':self.merchant_id,'amount':toman_to_irr(amount),'authority':authority}
@@ -56,5 +65,7 @@ class PaymentService:
     async def verify_zarinpal(self, authority:str, amount:int):
         if self.settings.payment_mode.lower() not in ('zarinpal','both'): raise RuntimeError('Zarinpal payment is disabled')
         return await ZarinpalGateway().verify(authority,amount)
+    def start_url(self, authority:str)->str:
+        return ZarinpalGateway().start_url(authority)
 
 payment = PaymentService()
