@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 
-def _request(authority):
-    return SimpleNamespace(match_info={'authority': authority})
+def _request(authority, ip='', **query):
+    return SimpleNamespace(match_info={'authority': authority}, query=query, headers={'X-Coach-Client-IP': ip} if ip else {})
 
 
 def _order(**changes):
@@ -59,3 +59,44 @@ def test_handoff_rejects_malformed_or_unknown_links(monkeypatch):
     assert asyncio.run(main.payment_redirect(_request('<script>'))).status == 404
     lookup.assert_not_awaited()
     assert asyncio.run(main.payment_redirect(_request('A000000000000000000000000000000abcde'))).status == 404
+
+
+def test_payment_pages_share_one_branded_design_and_font():
+    from app import main
+    from app.services import pay_pages
+    assert pay_pages.FONT.is_file() and pay_pages.FONT_URL.startswith('/pay/')  # Routed to the bot by nginx.
+    response = asyncio.run(main.payment_font(None))
+    assert response.headers['Cache-Control'].endswith('immutable')
+    page = main._result_page(True, 'پرداخت با موفقیت انجام شد', 'ok', 'form_42', rows=(('کد پیگیری', '<b>1</b>'),)).text
+    assert pay_pages.FONT_URL in page and 'سنسی' in page and 'start=form_42' in page
+    assert '&lt;b&gt;1&lt;/b&gt;' in page and 'هٔ' not in page
+
+
+def test_iranian_address_lookup_is_fail_open():
+    from app.services.geo import is_iranian
+    assert is_iranian('5.213.60.248') is True and is_iranian('2.176.1.1') is True
+    assert is_iranian('8.8.8.8') is False
+    for unknown in ('10.0.0.1', '172.18.0.1', '2001:4860::1', 'not-an-ip', '', None):
+        assert is_iranian(unknown) is None  # Never warn about an address we cannot place.
+
+
+@pytest.mark.parametrize('ip,query,vpn', [('8.8.8.8', {}, True), ('8.8.8.8', {'vpn': 'off'}, False),
+                                          ('5.213.60.248', {}, False), ('172.18.0.1', {}, False), ('', {}, False)])
+def test_foreign_visitors_get_vpn_steps_before_the_gateway(monkeypatch, ip, query, vpn):
+    from app import main
+    order = _order()
+    monkeypatch.setattr(main.repo, 'get_order_by_authority', AsyncMock(return_value=order))
+    response = asyncio.run(main.payment_redirect(_request(order['payment_authority'], ip, **query)))
+    assert response.status == 200
+    assert ('فیلترشکن روشن است' in response.text) is vpn
+    assert ('location.assign' in response.text) is not vpn  # The VPN page never forwards to the gateway itself.
+    if vpn:
+        assert f"/pay/{order['payment_authority']}?vpn=off" in response.text
+
+
+def test_handoff_shows_vpn_help_when_the_customer_comes_back():
+    from app.services import pay_pages
+    page = pay_pages.handoff('https://www.zarinpal.com/pg/StartPay/A1', (('مبلغ', '1,500 تومان'),), 'https://t.me/bot?start=pay_1')
+    assert 'class="card first"' in page and 'class="card back"' in page
+    assert 'pageshow' in page and 'sessionStorage' in page and 'location.assign' in page
+    assert 'خاموش کردم، تلاش دوباره' in page and 'start=pay_1' in page
