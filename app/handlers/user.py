@@ -1176,7 +1176,8 @@ async def show_orders(m, page: int = 1, edit: bool = False, actor=None):
     for o in rows:
         code=order_code(o['id']); renewal=bool(o.get('renewal_of_order_id'))
         status=order_status_fa(o['status'],renewal); command=f'/order_{o["id"]}'
-        lines.append(_table(code,[('دوره',o['product_title']),('وضعیت',status),('زمان',subscription_time_fa(o.get('days_remaining'),o.get('duration_days'))),('جزئیات',_bot_link(bot_username,'نمایش سفارش',command.removeprefix('/')))]))
+        time=[] if o['status']=='cancelled' else [('زمان',subscription_time_fa(o.get('days_remaining'),o.get('duration_days')))]
+        lines.append(_table(code,[('دوره',o['product_title']),('وضعیت',status),*time,('جزئیات',_bot_link(bot_username,'نمایش سفارش',command.removeprefix('/')))]))
     return await _screen(m,'\n\n'.join(lines),orders_list_kb(rows,page,total_pages),edit)
 
 
@@ -1314,10 +1315,16 @@ async def order_detail(c,state:FSMContext):
 async def show_order_detail_message(m: Message, tg_id: int, oid: int, active_course: bool=False, from_link: bool=False):
     o=await repo.get_user_order(oid,tg_id)
     if not o:return await m.answer('سفارش پیدا نشد یا متعلق به حساب شما نیست.')
-    if from_link or active_course:
-        markup=plan_download_kb(oid)
-    elif o['status']=='awaiting_payment':
+    code=order_code(oid)
+    if o['status']=='cancelled':
+        # A cancelled order has nothing to deliver: show which order it was and its status, no files or course path.
+        if from_link: markup=None
+        else: b=InlineKeyboardBuilder(); b.button(text='⬅️ تاریخچه سفارشات',callback_data='orders'); markup=b.as_markup()
+        return await _screen(m,_table(f'📋 جزئیات سفارش {code}',[('دوره',o['product_title']),('کد سفارش',code),('وضعیت',status_fa('cancelled'))]),markup)
+    if o['status']=='awaiting_payment':
         markup=pending_order_kb(oid)
+    elif from_link or active_course:
+        markup=plan_download_kb(oid)
     elif o['status']=='payment_rejected':
         markup=rejected_receipt_kb(oid)
     elif o.get('paid_at'):
@@ -1339,7 +1346,6 @@ async def show_order_detail_message(m: Message, tg_id: int, oid: int, active_cou
             markup=b.as_markup()
     renewal=bool(o.get('renewal_of_order_id'))
     active_renewal=(f"\n\n🔄 تمدید #{o['active_renewal_id']}\n{progress_path(o['active_renewal_status'],True)}" if o.get('active_renewal_id') else '')
-    code=order_code(oid)
     text='\n\n'.join([
         _table(f"📋 {'جزئیات دوره' if active_course else ('تمدید' if renewal else 'جزئیات سفارش')} {code}",[
             ('دوره',o['product_title']),('کد سفارش',code),('زمان ثبت',local_dt(o.get('created_at'))),
@@ -1353,6 +1359,8 @@ async def show_order_detail_message(m: Message, tg_id: int, oid: int, active_cou
 
 async def send_plan_to_customer(m: Message, tg_id: int, oid: int):
     o=await repo.get_user_order(oid,tg_id)
+    if o and o.get('status')=='cancelled':
+        return await m.answer('این سفارش لغو شده و فایلی برای آن وجود ندارد.')
     if o and o.get('paid_at') and o.get('status')=='delivered':
         terms=repo._json_object(o.get('product_snapshot'))
         if terms.get('delivery_mode')=='channel':
