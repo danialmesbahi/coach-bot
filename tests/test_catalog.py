@@ -1,6 +1,7 @@
 import asyncio
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -8,6 +9,8 @@ from app.services.catalog import validate_product
 from app.services.staff import can
 from app.handlers.user import purchase_route, advance_after, finish_questionnaire
 from app.services import fulfillment
+
+ROOT=Path(__file__).resolve().parents[1]
 
 
 def product(**changes):
@@ -80,3 +83,22 @@ def test_public_catalog_route_needs_no_session():
     import inspect
     from app import webapp
     assert '"/api/public/catalog"' in inspect.getsource(webapp.auth)
+
+
+def test_catalog_edits_reach_the_website_without_waiting_for_caches():
+    import inspect, re
+    from app import catalog_api, webapp
+    catalog_api._public_cache.update(at=1e12,body={'items':[],'sales_open':True})
+    catalog_api.clear_public_catalog()
+    assert catalog_api._public_cache['body'] is None
+    for handler in (catalog_api.catalog_save,catalog_api.catalog_archive,catalog_api.catalog_reorder,webapp.sales_gate):
+        assert 'clear_public_catalog()' in inspect.getsource(handler)
+    page=(ROOT/'site/src/app/page.tsx').read_text(encoding='utf-8')
+    assert 'export const dynamic = "force-dynamic"' in page and 'revalidate' not in page.split('function')[0]
+    assert 'cache: "no-store"' in (ROOT/'site/src/lib/catalog.ts').read_text(encoding='utf-8')
+    # Host nginx: one 60 s copy per URL, never handed out stale while the site answers.
+    conf=(ROOT/'deploy/nginx-sensibot-https.conf').read_text(encoding='utf-8')
+    site=re.search(r'\n    location / \{(.*?)\n    \}',conf,re.S).group(1)
+    assert 'proxy_ignore_headers Cache-Control Expires Vary;' in site and 'proxy_cache_valid 200 301 404 60s;' in site
+    assert 'updating' not in site and 'background_update' not in site
+    assert 'proxy_set_header Host $host;' in site and 'proxy_set_header X-Forwarded-For $remote_addr;' in site

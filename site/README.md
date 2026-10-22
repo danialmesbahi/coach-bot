@@ -25,8 +25,8 @@ Set these build-time variables (or edit `src/lib/site.ts`). They must match the 
 
 The programs section reads the panel's catalog from `GET /api/public/catalog` on the web API (only storefront fields:
 title, description, price, duration, type and questionnaire fields; never delivery content). Set `CATALOG_API_URL`
-at runtime, e.g. `http://web-api:8090/api/public/catalog` inside Docker. The home page regenerates every 5 minutes;
-each program's button opens that exact product in the bot (`?start=buy_<id>`). If the API is unreachable the
+at runtime, e.g. `http://web-api:8090/api/public/catalog` inside Docker. The home page reads it on every render (host nginx
+keeps a 60-second copy), so panel edits show within a minute; each program's button opens that exact product in the bot (`?start=buy_<id>`). If the API is unreachable the
 defaults in `src/lib/site.ts` are shown instead.
 
 Review `/terms`, `/privacy` and `/refund` before launch.

@@ -20,7 +20,7 @@ RUN pnpm build
 
 FROM node:24-alpine AS runner
 WORKDIR /app
-# Business/trust values are also passed at runtime by docker-compose (pages are regenerated every 5 minutes).
+# Business/trust values are also passed at runtime by docker-compose (pages are rendered per request).
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=3100 HOSTNAME=0.0.0.0 CATALOG_API_URL=http://web-api:8090/api/public/catalog
 RUN addgroup --system --gid 1001 nodejs && adduser --system --uid 1001 nextjs
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./

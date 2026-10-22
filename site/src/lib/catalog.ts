@@ -2,7 +2,7 @@ import { config } from "./site";
 
 /**
  * Live storefront from the panel's product catalog (GET /api/public/catalog on the web API).
- * Pages are regenerated every 5 minutes; if the API is unreachable the defaults in site.ts are shown.
+ * Read on every render (host nginx caches the page for 60 s); if the API is unreachable the defaults in site.ts are shown.
  */
 
 export type PlanKind = "manual" | "content" | "channel";
@@ -31,8 +31,6 @@ type ApiItem = {
   delivery_mode: PlanKind;
   form_fields: string[];
 };
-
-export const REVALIDATE_SECONDS = 300;
 
 const FIELD_LABELS: Record<string, string> = {
   age: "سن",
@@ -104,7 +102,7 @@ export async function getCatalog(): Promise<{ plans: Plan[]; salesOpen: boolean;
   const url = process.env.CATALOG_API_URL?.trim();
   if (!url) return { plans: fallback(), salesOpen: true, live: false };
   try {
-    const res = await fetch(url, { next: { revalidate: REVALIDATE_SECONDS }, signal: AbortSignal.timeout(3000) });
+    const res = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(3000) });
     if (!res.ok) throw new Error(`catalog ${res.status}`);
     const body = (await res.json()) as { items: ApiItem[]; sales_open: boolean };
     if (!Array.isArray(body.items) || !body.items.length) return { plans: fallback(), salesOpen: body.sales_open !== false, live: false };

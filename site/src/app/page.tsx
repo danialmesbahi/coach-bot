@@ -14,8 +14,9 @@ import { faqs } from "@/lib/faq";
 import { journey } from "@/lib/journey";
 import { botUrl, config, site } from "@/lib/site";
 
-// Programs come from the panel's catalog; the page is regenerated every 5 minutes.
-export const revalidate = 300;
+// Programs come from the panel's catalog, read on every render so panel edits show up at once.
+// Host nginx keeps a 60-second copy of the rendered page (deploy/nginx-sensibot-https.conf).
+export const dynamic = "force-dynamic";
 
 function jsonLd(plans: Plan[]) {
   const url = site.url;

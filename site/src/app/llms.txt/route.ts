@@ -3,7 +3,7 @@ import { journey } from "@/lib/journey";
 import { getCatalog } from "@/lib/catalog";
 import { botUrl, site, toman } from "@/lib/site";
 
-export const revalidate = 300;
+export const dynamic = "force-dynamic";
 
 /** Plain-language summary for AI assistants and answer engines (llmstxt.org). */
 export async function GET() {
