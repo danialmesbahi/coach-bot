@@ -74,7 +74,7 @@ async def catalog_save(request):
                 raise web.HTTPBadRequest(text='Invalid position')
             await move_product(c,row['id'],before)
         await staff.audit(c,request['actor'],'product_saved','product',row['id'])
-    request.app['read_cache'].clear()
+    request.app['read_cache'].clear(); clear_public_catalog()
     return response({'ok':True,'id':row['id']})
 
 
@@ -85,7 +85,7 @@ async def catalog_archive(request):
         row=await c.fetchrow('UPDATE products SET archived=true,active=false,version=version+1,updated_at=NOW() WHERE id=$1 AND NOT archived RETURNING id',int(request.match_info['product_id']))
         if not row: raise web.HTTPNotFound()
         await staff.audit(c,request['actor'],'product_archived','product',row['id'])
-    request.app['read_cache'].clear()
+    request.app['read_cache'].clear(); clear_public_catalog()
     return response({'ok':True})
 
 
@@ -161,7 +161,7 @@ async def catalog_reorder(request):
             return response({'error':'product_changed'},409)
         await move_product(c,body['id'],before)
         await staff.audit(c,request['actor'],'product_reordered','product',body['id'])
-    request.app['read_cache'].clear()
+    request.app['read_cache'].clear(); clear_public_catalog()
     return response({'ok':True})
 
 
@@ -193,6 +193,11 @@ async def catalog_channel(request):
 
 
 _public_cache={'at':0.0,'body':None}
+
+
+def clear_public_catalog():
+    """The website shows panel edits on its next render instead of after the 60 s cache runs out."""
+    _public_cache['body']=None
 
 
 async def public_catalog(request):

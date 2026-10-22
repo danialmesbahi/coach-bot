@@ -703,6 +703,8 @@ async def sales_gate(request: web.Request):
         return response({"error": "invalid_sales_state"}, 400)
     current = await repo.set_sales_open(is_open)
     request.app["read_cache"].clear()
+    from app.catalog_api import clear_public_catalog
+    clear_public_catalog()
     await repo.add_audit(request["actor"], "web_sales_gate", "sales_gate", 1, {"open": current})
     return response({"open": current})
 

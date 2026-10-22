@@ -171,11 +171,11 @@ services:
         ZARINPAL_TRUST: ${ZARINPAL_TRUST:-}
     restart: unless-stopped
     mem_limit: 512m
-    # the same values at runtime, because pages are regenerated every 5 minutes
+    # the same values at runtime, because pages are rendered per request
     environment:
       <<: *site-env
       CATALOG_API_URL: http://web-api:8090/api/public/catalog
-    # writable: Next.js stores regenerated pages under /app/.next (runs as an unprivileged user)
+    # writable: Next.js keeps its cache under /app/.next (runs as an unprivileged user)
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
     init: true
